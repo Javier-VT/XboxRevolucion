@@ -54,7 +54,7 @@ database.ref('xbox_rev_db').on('value', (snapshot) => {
         
         // PROTECCIÓN CRÍTICA: Si Firebase transformó los arreglos en objetos, 
         // Object.values() los extrae y los vuelve a dejar como arreglos limpios.
-        if (db.devices && !Array.isArray(db.devices)) db.devices = Object.values(dev.devices);
+        if (db.devices && !Array.isArray(db.devices)) db.devices = Object.values(db.devices); // ¡Corregido!
         if (db.employees && !Array.isArray(db.employees)) db.employees = Object.values(db.employees);
         if (db.history && !Array.isArray(db.history)) db.history = Object.values(db.history);
         
@@ -80,8 +80,10 @@ database.ref('xbox_rev_db').on('value', (snapshot) => {
                 const estabaOnline = estadosPreviosDispositivos[dev.id] === false;
                 const estaOfflineAhora = dev.isOffline === true;
 
-                if (estabaOnline && estaOfflineAgora) {
-                    dispararNotificacionFlotante(dev);
+                if (estabaOnline && estaOfflineAhora) { // ¡Corregido!
+                    if (typeof dispararNotificacionFlotante === "function") {
+                        dispararNotificacionFlotante(dev);
+                    }
                 }
             }
             estadosPreviosDispositivos[dev.id] = dev.isOffline || false;
