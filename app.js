@@ -123,6 +123,17 @@ function poblarFiltroCajerosAdmin() {
     }
 }
 
+function saveDB() {
+    database.ref('xbox_rev_db').set(db);
+}
+
+function initShifts() {
+    if(!db.currentShift["Administrador"]) db.currentShift["Administrador"] = { efectivoEsperado: 0, sobrantes: 0, sesiones: 0 };
+    db.employees.forEach(emp => {
+        if(!db.currentShift[emp.name]) db.currentShift[emp.name] = { efectivoEsperado: 0, sobrantes: 0, sesiones: 0 };
+    });
+}
+
 // ===================================================================
 // 4. GENERADOR DE ALERTAS DE SONIDO
 // ===================================================================
