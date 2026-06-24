@@ -45,12 +45,20 @@ if (window.Notification && Notification.permission !== "granted") {
 
 
 // ===================================================================
-// 3. ESCUCHA DE DATOS AUTOMÁTICA EN TIEMPO REAL (VERSIÓN GITHUB)
+// 3. ESCUCHA DE DATOS AUTOMÁTICA EN TIEMPO REAL (VERSIÓN SANITIZADA)
 // ===================================================================
 database.ref('xbox_rev_db').on('value', (snapshot) => {
     const data = snapshot.val();
     if (data) {
         db = data;
+        
+        // PROTECCIÓN CRÍTICA: Si Firebase transformó los arreglos en objetos, 
+        // Object.values() los extrae y los vuelve a dejar como arreglos limpios.
+        if (db.devices && !Array.isArray(db.devices)) db.devices = Object.values(dev.devices);
+        if (db.employees && !Array.isArray(db.employees)) db.employees = Object.values(db.employees);
+        if (db.history && !Array.isArray(db.history)) db.history = Object.values(db.history);
+        
+        // Asegurar inicialización por si la base de datos está completamente vacía
         if (!db.devices) db.devices = [];
         if (!db.employees) db.employees = [];
         if (!db.history) db.history = [];
@@ -60,24 +68,27 @@ database.ref('xbox_rev_db').on('value', (snapshot) => {
     initShifts();
     poblarSelectLogin();
     
-    // --- NUEVO DETECTOR DE CAMBIOS DE CONEXIÓN PARA EL ADMINISTRADOR ---
+    // Mantener actualizado el filtro de usuarios de la pestaña de administración en vivo
+    if (isAdminAuthenticated && activeTab === 'admin') {
+        poblarFiltroCajerosAdmin();
+    }
+    
+    // --- DETECTOR DE CAMBIOS DE CONEXIÓN PARA EL ADMINISTRADOR ---
     if (db.devices) {
         db.devices.forEach(dev => {
-            // Verificar si el dispositivo existe en nuestro registro previo
             if (estadosPreviosDispositivos[dev.id] !== undefined) {
                 const estabaOnline = estadosPreviosDispositivos[dev.id] === false;
                 const estaOfflineAhora = dev.isOffline === true;
 
-                // REGLA: Si estaba online y se acaba de desconectar, dispara la alerta
-                if (estabaOnline && estaOfflineAhora) {
+                if (estabaOnline && estaOfflineAgora) {
                     dispararNotificacionFlotante(dev);
                 }
             }
-            // Actualizar la memoria con el estado actual
             estadosPreviosDispositivos[dev.id] = dev.isOffline || false;
         });
     }
     
+    // Auto-actualiza la UI en vivo si hay sesión abierta
     if (currentRole) {
         render();
         if (isAdminAuthenticated) renderAdminTables();
@@ -85,28 +96,19 @@ database.ref('xbox_rev_db').on('value', (snapshot) => {
     }
 });
 
-// FUNCIÓN MAESTRA: Lanza la notificación al sistema operativo (Windows, Android, Mac)
-function dispararNotificacionFlotante(dev) {
-    if (!window.Notification) return;
-
-    if (Notification.permission === "granted") {
-        const opciones = {
-            body: `Alerta: La terminal "${dev.name}" (${dev.type}) ha perdido conexión con el sistema local.`,
-            icon: "logo.png", // Usa tu logo.png que ya tienes en la raíz
-            vibrate: [200, 100, 200],
-            requireInteraction: true // La notificación no se quita hasta que le des clic
-        };
-
-        const notificacion = new Notification(`⚠️ ESP32 DESCONECTADA`, opciones);
-        
-        // Al darle clic a la notificación, te lleva automáticamente a la pestaña del navegador
-        notificacion.onclick = function() {
-            window.focus();
-            this.close();
-        };
-
-        // Hacer sonar el pitido también en la computadora remota del administrador
-        playBeep();
+// FUNCIÓN AUXILIAR: Mantiene el selector de filtros sincronizado sin romperlo
+function poblarFiltroCajerosAdmin() {
+    const userFilter = document.getElementById('filterHistoryUser');
+    if (userFilter) {
+        const currentSelected = userFilter.value || 'all';
+        userFilter.innerHTML = `
+            <option value="all">Todos los usuarios</option>
+            <option value="Administrador">Administrador</option>
+        `;
+        db.employees.forEach(emp => {
+            userFilter.innerHTML += `<option value="${emp.name}">${emp.name}</option>`;
+        });
+        userFilter.value = currentSelected;
     }
 }
 
@@ -183,7 +185,6 @@ function cerrarSesion() {
     isAdminAuthenticated = false;
 }
 
-// Navegación
 function switchTab(tabId) {
     if (tabId === 'admin' && !isAdminAuthenticated) return;
     activeTab = tabId;
@@ -193,21 +194,8 @@ function switchTab(tabId) {
     document.getElementById(`tab-${tabId}`).classList.add('active');
     
     if(tabId === 'admin') { 
-        // Primero poblamos el nuevo filtro de usuarios con los empleados vigentes
-        const userFilter = document.getElementById('filterHistoryUser');
-        if (userFilter) {
-            const currentSelected = userFilter.value;
-            userFilter.innerHTML = `
-                <option value="all">Todos los usuarios</option>
-                <option value="Administrador">Administrador</option>
-            `;
-            db.employees.forEach(emp => {
-                userFilter.innerHTML += `<option value="${emp.name}">${emp.name}</option>`;
-            });
-            if (currentSelected) userFilter.value = currentSelected;
-        }
-        
-        // Ejecutamos el renderizado de las tablas de administración
+        // Llama a la función de población segura
+        poblarFiltroCajerosAdmin();
         renderAdminTables(); 
         renderHistoryTable(); 
     }
