@@ -36,13 +36,22 @@ let db = {
     currentShift: {}
 };
 
-let estadosPreviosDispositivos = {}; // Memoria para evitar que la notificación se repita cada segundo
+let estadosPreviosDispositivos = {}; // Memoria para notificaciones
 
-// Solicitar permisos de notificación apenas cargue la página en GitHub
-if (window.Notification && Notification.permission !== "granted") {
-    Notification.requestPermission();
+// TRUCO 1: Llenar la caja inmediatamente con los datos por defecto para que nunca se vea vacía
+poblarSelectLogin();
+
+// TRUCO 2: Blindar la solicitud de notificaciones para que no crashee al abrirse localmente
+try {
+    if (window.Notification && Notification.permission !== "granted") {
+        let promesa = Notification.requestPermission();
+        if (promesa) {
+            promesa.catch(e => console.warn("Las notificaciones fueron silenciadas localmente por seguridad."));
+        }
+    }
+} catch (e) {
+    console.warn("El entorno no soporta la API de Notificaciones.");
 }
-
 
 // ===================================================================
 // 3. ESCUCHA DE DATOS AUTOMÁTICA EN TIEMPO REAL (VERSIÓN SANITIZADA)
@@ -52,13 +61,12 @@ database.ref('xbox_rev_db').on('value', (snapshot) => {
     if (data) {
         db = data;
         
-        // PROTECCIÓN CRÍTICA: Si Firebase transformó los arreglos en objetos, 
-        // Object.values() los extrae y los vuelve a dejar como arreglos limpios.
-        if (db.devices && !Array.isArray(db.devices)) db.devices = Object.values(db.devices); // ¡Corregido!
+        // PROTECCIÓN CRÍTICA: Convierte objetos corruptos a arreglos limpios
+        if (db.devices && !Array.isArray(db.devices)) db.devices = Object.values(db.devices);
         if (db.employees && !Array.isArray(db.employees)) db.employees = Object.values(db.employees);
         if (db.history && !Array.isArray(db.history)) db.history = Object.values(db.history);
         
-        // Asegurar inicialización por si la base de datos está completamente vacía
+        // Asegurar inicialización por si la base de datos de la nube está vacía
         if (!db.devices) db.devices = [];
         if (!db.employees) db.employees = [];
         if (!db.history) db.history = [];
@@ -66,9 +74,9 @@ database.ref('xbox_rev_db').on('value', (snapshot) => {
     }
     
     initShifts();
-    poblarSelectLogin();
+    poblarSelectLogin(); // Actualiza la lista con los empleados reales de Firebase
     
-    // Mantener actualizado el filtro de usuarios de la pestaña de administración en vivo
+    // Mantiene actualizado el filtro de usuarios de la pestaña de administración
     if (isAdminAuthenticated && activeTab === 'admin') {
         poblarFiltroCajerosAdmin();
     }
@@ -80,7 +88,8 @@ database.ref('xbox_rev_db').on('value', (snapshot) => {
                 const estabaOnline = estadosPreviosDispositivos[dev.id] === false;
                 const estaOfflineAhora = dev.isOffline === true;
 
-                if (estabaOnline && estaOfflineAhora) { // ¡Corregido!
+                // Si se acaba de desconectar, lanza la alerta
+                if (estabaOnline && estaOfflineAhora) {
                     if (typeof dispararNotificacionFlotante === "function") {
                         dispararNotificacionFlotante(dev);
                     }
