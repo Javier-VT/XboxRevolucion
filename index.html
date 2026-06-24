@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Xbox Revolución - Sistema de Control y Gestión</title>
+    <link rel="shortcut icon" href="logo.png" type="image/png">
+    
+    <link rel="stylesheet" href="style.css">
+    
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+    
+    <script src="app.js" defer></script>
+</head>
+<body>
+
+<div id="loginOverlay">
+    <div class="login-box">
+        <h1>Xbox <span>Revolución</span></h1>
+        <p style="color: var(--text-muted); margin-bottom: 20px; font-size: 14px;">Inicia sesión para continuar</p>
+        
+        <select id="loginUserSelect"></select>
+        <input type="password" id="loginPinInput" placeholder="PIN de Seguridad" autocomplete="new-password">
+        
+        <button class="btn-green" style="width: 100%; padding: 15px; font-size: 16px;" onclick="realizarLogin()">Entrar al Sistema</button>
+        <p id="loginError" style="color: var(--danger); font-size: 13px; margin-top: 15px; display: none;">PIN incorrecto.</p>
+    </div>
+</div>
+
+<div id="mainApp">
+    <div class="container">
+        <header>
+            <div class="logo-section">
+                <div class="brand-container">
+                    <img src="logo.png" alt="Logo" class="logo-img">
+                    <h1>Xbox <span>Revolución</span></h1>
+                </div>
+            </div>
+            <div class="user-controls">
+                <div style="display: flex; flex-direction: column;">
+                    <label style="font-size: 11px; color: var(--text-muted)">Sesión Activa:</label>
+                    <span id="currentUserNameDisplay" class="user-name-display">Usuario</span>
+                </div>
+                <button class="btn-logout" onclick="cerrarSesion()">Salir</button>
+                <span id="liveClock" style="font-family: monospace; font-size: 16px; margin-right: 15px; color:var(--xbox-green);">00:00:00</span>
+            </div>
+        </header>
+
+        <div class="tabs">
+            <button class="tab-btn active" id="tabNav-dashboard" onclick="switchTab('dashboard')">🎮 Terminales</button>
+            <button class="tab-btn" id="tabNav-caja" onclick="switchTab('caja')">💵 Caja / Turno</button>
+            <button class="tab-btn" id="tabNav-admin" onclick="switchTab('admin')" style="display: none;">⚙️ Admin</button>
+        </div>
+
+        <div id="tab-dashboard" class="tab-content active">
+            <div class="grid" id="devicesGrid"></div>
+        </div>
+
+        <div id="tab-caja" class="tab-content">
+            <div class="admin-section">
+                <h2 id="cajaTitle">Corte de Caja Actual</h2>
+                <div class="metrics-grid" style="margin-top: 15px;">
+                    <div class="metric-card">
+                        <p>Efectivo Esperado</p>
+                        <h3 id="cajaEfectivoEsperado" style="color: var(--xbox-green);">$0.00</h3>
+                    </div>
+                    <div class="metric-card">
+                        <p>Sobrantes / Ajustes</p>
+                        <h3 id="cajaSobrantes" style="color: var(--warning);">$0.00</h3>
+                    </div>
+                    <div class="metric-card">
+                        <p>Sesiones del Turno</p>
+                        <h3 id="cajaSesionesTurno">0</h3>
+                    </div>
+                </div>
+                
+                <div style="background-color: #181822; padding: 20px; border-radius: 8px; margin-top: 20px; border: 1px solid var(--border-color);">
+                    <h3>Registrar Dinero Sobrante / Ajuste</h3>
+                    <div id="caja-form" style="display: flex; gap: 10px; margin-top: 15px;">
+                        <input type="number" id="sobranteMonto" placeholder="Monto ($)" style="width: 120px;">
+                        <input type="text" id="sobranteNota" placeholder="Motivo o nota..." style="flex: 1;">
+                        <button class="btn-warning" onclick="registrarSobrante()">Agregar</button>
+                    </div>
+                </div>
+
+                <div style="margin-top: 25px; text-align: right;">
+                    <button class="btn-danger" style="padding: 12px 25px; width: 100%; max-width: 300px;" onclick="cerrarTurno()">Finalizar Turno</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="tab-admin" class="tab-content">
+            <div id="adminProtectedContent">
+                
+                <div class="admin-section">
+                    <h2>Historial de Ventas</h2>
+                    <div style="margin: 15px 0; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                        <label style="font-size: 13px; color: var(--text-muted)">Filtrar:</label>
+                        <select id="filterHistoryRange" onchange="renderHistoryTable()" style="flex: 1; max-width: 200px;">
+                            <option value="all">Todo el Historial</option>
+                            <option value="day">Hoy</option>
+                            <option value="week">Esta Semana</option>
+                            <option value="month">Este Mes</option>
+                            <option value="year">Este Año</option>
+                        </select>
+                        <select id="filterHistoryUser" onchange="renderHistoryTable()"> </select>
+                    </div>
+                    <div class="metrics-grid">
+                        <div class="metric-card">
+                            <p>Ingresos Brutos</p>
+                            <h3 id="adminTotalIngresos" style="color: var(--xbox-green);">$0.00</h3>
+                        </div>
+                        <div class="metric-card">
+                            <p>Sobrantes Totales</p>
+                            <h3 id="adminTotalSobrantes" style="color: var(--warning);">$0.00</h3>
+                        </div>
+                    </div>
+
+                    <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
+                        <table>
+                            <thead>
+                                <tr><th>Fecha/Hora</th><th>Terminal</th><th>Usuario</th><th>Tiempo</th><th>Operación</th><th>Monto</th></tr>
+                            </thead>
+                            <tbody id="historyTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="admin-section">
+                    <h2>Gestión de Terminales (CRUD)</h2>
+                    <input type="hidden" id="editDevId">
+                    <div class="form-row">
+                        <input type="text" id="devName" placeholder="Nombre (Ej: Xbox 11)">
+                        <input type="text" id="devIP" placeholder="IP (Ej: 192.168.1.80)">
+                        <select id="devType">
+                            <option value="Xbox">Xbox</option>
+                            <option value="PC">Computadora (PC)</option>
+                        </select>
+                        <button class="btn-green" id="btnSaveDev" onclick="guardarDispositivo()">+ Agregar</button>
+                        <button class="btn-danger" id="btnCancelDev" onclick="cancelarEdicionDev()" style="display:none;">Cancelar</button>
+                    </div>
+                    <div class="table-responsive" style="margin-top: 15px; max-height: 250px; overflow-y: auto;">
+                        <table>
+                            <thead>
+                                <tr><th>Terminal</th><th>Tipo</th><th>IP</th><th>Acciones</th></tr>
+                            </thead>
+                            <tbody id="adminDevicesTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="admin-section">
+                    <h2>Gestión de Personal (CRUD)</h2>
+                    <p style="font-size:12px; color:var(--text-muted); margin-bottom:10px;">Crea o modifica los cajeros y asígnales su PIN de acceso.</p>
+                    <input type="hidden" id="editEmpId">
+                    <div class="form-row">
+                        <input type="text" id="empName" placeholder="Nombre completo">
+                        <input type="text" id="empPin" placeholder="PIN Secreto (Ej: 1111)" style="max-width: 150px;">
+                        <button class="btn-green" id="btnSaveEmp" onclick="guardarEmpleado()">+ Agregar Empleado</button>
+                        <button class="btn-danger" id="btnCancelEmp" onclick="cancelarEdicionEmp()" style="display:none;">Cancelar</button>
+                    </div>
+                    <div class="table-responsive" style="margin-top: 15px; max-height: 200px; overflow-y: auto;">
+                        <table>
+                            <thead>
+                                <tr><th>Nombre / Rol</th><th>PIN Asignado</th><th>Acciones</th></tr>
+                            </thead>
+                            <tbody id="adminEmployeesTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</div>
+
+</body>
+</html>
