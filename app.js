@@ -271,19 +271,48 @@ function renderAdminTables() {
 }
 
 function renderHistoryTable() {
-    const range = document.getElementById('filterHistoryRange')?.value || 'all', userFilter = document.getElementById('filterHistoryUser')?.value || 'all', tbody = document.getElementById('historyTableBody');
+    const range = document.getElementById('filterHistoryRange')?.value || 'all';
+    const userFilter = document.getElementById('filterHistoryUser')?.value || 'all';
+    const tbody = document.getElementById('historyTableBody');
     if(!tbody) return;
-    let filtrados = db.history; const ahora = new Date();
-    if (range === 'day') filtrados = db.history.filter(h => new Date(h.timestamp).toDateString() === ahora.toDateString());
-    else if (range === 'week') filtrados = db.history.filter(h => new Date(h.timestamp) >= new Date(ahora.getTime() - 7*24*60*60*1000));
-    else if (range === 'month') filtrados = db.history.filter(h => new Date(h.timestamp).getMonth() === ahora.getMonth() && new Date(h.timestamp).getFullYear() === ahora.getFullYear());
-    if (userFilter !== 'all') filtrados = filtrados.filter(h => h.cajero === userFilter);
+    
+    // 1. Crear una copia del arreglo original para no alterar la base de datos cruda
+    let filtrados = [...db.history]; 
+    const ahora = new Date();
 
+    // 2. Aplicar filtros de fecha
+    if (range === 'day') {
+        filtrados = filtrados.filter(h => new Date(h.timestamp).toDateString() === ahora.toDateString());
+    } else if (range === 'week') {
+        filtrados = filtrados.filter(h => new Date(h.timestamp) >= new Date(ahora.getTime() - 7*24*60*60*1000));
+    } else if (range === 'month') {
+        filtrados = filtrados.filter(h => new Date(h.timestamp).getMonth() === ahora.getMonth() && new Date(h.timestamp).getFullYear() === ahora.getFullYear());
+    }
+
+    // 3. Aplicar filtro de usuario
+    if (userFilter !== 'all') {
+        filtrados = filtrados.filter(h => h.cajero === userFilter);
+    }
+
+    // --- NUEVA REGLA: ORDENAR DE MÁS RECIENTE A MÁS ANTIGUO ---
+    filtrados.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+    // 4. Calcular totales y dibujar la tabla
     let inTot = 0, sobTot = 0;
     tbody.innerHTML = filtrados.map(h => {
         h.type.includes("Sobrante") ? sobTot += h.monto : inTot += h.monto;
-        return `<tr><td>${new Date(h.timestamp).toLocaleString([],{dateStyle:'short',timeStyle:'short'})}</td><td>${h.device}</td><td>${h.cajero}</td><td>${h.durationMins}m</td><td><span class="status-badge ${h.type.includes('Sobrante')?'status-update':'status-active'}">${h.type}</span></td><td style="color:var(--xbox-green); font-weight:bold;">$${parseFloat(h.monto).toFixed(2)}</td></tr>`;
+        
+        return `<tr>
+            <td>${new Date(h.timestamp).toLocaleString([],{dateStyle:'short',timeStyle:'short'})}</td>
+            <td>${h.device}</td>
+            <td>${h.cajero}</td>
+            <td>${h.durationMins}m</td>
+            <td><span class="status-badge ${h.type.includes('Sobrante')?'status-update':'status-active'}">${h.type}</span></td>
+            <td style="color:var(--xbox-green); font-weight:bold;">$${parseFloat(h.monto).toFixed(2)}</td>
+        </tr>`;
     }).join('');
+    
+    // 5. Actualizar los marcadores de dinero
     document.getElementById('adminTotalIngresos').innerText = `$${inTot.toFixed(2)}`;
     document.getElementById('adminTotalSobrantes').innerText = `$${sobTot.toFixed(2)}`;
 }
