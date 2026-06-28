@@ -85,7 +85,7 @@
                 </div>
 
                 <div style="margin-top: 25px; text-align: right;">
-                    <button class="btn-danger" style="padding: 12px 25px; width: 100%; max-width: 300px;" onclick="cerrarTurno()">Finalizar Turno</button>
+                    <button class="btn-danger" style="padding: 12px 25px; width: 100%; max-width: 300px; font-size: 16px;" onclick="terminarTurno()">🏁 Terminar Turno y Resetear Caja</button>
                 </div>
             </div>
         </div>
@@ -93,6 +93,46 @@
         <div id="tab-admin" class="tab-content">
             <div id="adminProtectedContent">
                 
+                <div class="admin-section">
+                    <h2>Configuración de Precios (Base 1 Control)</h2>
+                    <p style="font-size:12px; color:var(--text-muted); margin-bottom:10px;">Establece el costo base por fracción y el cargo adicional <b>por hora</b> según los controles extra. El sistema fraccionará los extras automáticamente.</p>
+                    
+                    <div class="form-row" style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 15px;">
+                        <div style="display: flex; flex-direction: column; width: 100px;">
+                            <label style="font-size: 11px; color: #aaa;">15 Mins ($)</label>
+                            <input type="number" id="cfg-p15" placeholder="Ej: 8">
+                        </div>
+                        <div style="display: flex; flex-direction: column; width: 100px;">
+                            <label style="font-size: 11px; color: #aaa;">30 Mins ($)</label>
+                            <input type="number" id="cfg-p30" placeholder="Ej: 15">
+                        </div>
+                        <div style="display: flex; flex-direction: column; width: 100px;">
+                            <label style="font-size: 11px; color: #aaa;">45 Mins ($)</label>
+                            <input type="number" id="cfg-p45" placeholder="Ej: 20">
+                        </div>
+                        <div style="display: flex; flex-direction: column; width: 100px;">
+                            <label style="font-size: 11px; color: #aaa;">60 Mins ($)</label>
+                            <input type="number" id="cfg-p60" placeholder="Ej: 25">
+                        </div>
+                    </div>
+
+                    <div class="form-row" style="display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end;">
+                        <div style="display: flex; flex-direction: column; width: 120px;">
+                            <label style="font-size: 11px; color: var(--warning);">+1 Control (2 total)</label>
+                            <input type="number" id="cfg-ext1" placeholder="Ej: 5">
+                        </div>
+                        <div style="display: flex; flex-direction: column; width: 120px;">
+                            <label style="font-size: 11px; color: var(--warning);">+2 Controles (3 total)</label>
+                            <input type="number" id="cfg-ext2" placeholder="Ej: 10">
+                        </div>
+                        <div style="display: flex; flex-direction: column; width: 120px;">
+                            <label style="font-size: 11px; color: var(--warning);">+3 Controles (4 total)</label>
+                            <input type="number" id="cfg-ext3" placeholder="Ej: 15">
+                        </div>
+                        <button class="btn-green" style="padding: 10px 15px; margin-left: auto;" onclick="guardarPrecios()">💾 Guardar Precios</button>
+                    </div>
+                </div>
+
                 <div class="admin-section">
                     <h2>Historial de Ventas</h2>
                     <div style="margin: 15px 0; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
@@ -120,7 +160,7 @@
                     <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
                         <table>
                             <thead>
-                                <tr><th>Fecha/Hora</th><th>Terminal</th><th>Usuario</th><th>Tiempo</th><th>Operación</th><th>Monto</th></tr>
+                                <tr><th>Fecha</th><th>Terminal</th><th>Usuario</th><th>Horario / Tiempo</th><th>Operación</th><th>Monto</th></tr>
                             </thead>
                             <tbody id="historyTableBody"></tbody>
                         </table>

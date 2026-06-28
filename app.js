@@ -22,7 +22,7 @@ let currentRole = null;
 let activeTab = "dashboard";
 let isAdminAuthenticated = false;
 
-let db = { devices: [], employees: [], history: [], currentShift: {} };
+let db = { devices: [], employees: [], history: [], currentShift: {}, settings: {} };
 let estadosPreviosDispositivos = {}; 
 
 try {
@@ -32,7 +32,6 @@ try {
     }
 } catch (e) { console.warn("Sin soporte para Notificaciones."); }
 
-// FUNCIONES CRÍTICAS MOVIDAS AL PRINCIPIO PARA EVITAR ERRORES DE REFERENCIA
 function saveDB() {
     database.ref('xbox_rev_db').set(db);
 }
@@ -59,21 +58,27 @@ database.ref('xbox_rev_db').on('value', (snapshot) => {
         if (!db.employees) db.employees = [];
         if (!db.history) db.history = [];
         if (!db.currentShift) db.currentShift = {};
+        if (!db.settings) db.settings = { p15: 8, p30: 15, p45: 20, p60: 25, ext1: 5, ext2: 10, ext3: 15 };
     }
     
     initShifts();
     poblarSelectLogin();
     
-    if (isAdminAuthenticated && activeTab === 'admin') poblarFiltroCajerosAdmin();
+    if (isAdminAuthenticated && activeTab === 'admin') {
+        poblarFiltroCajerosAdmin();
+        cargarPreciosUI();
+    }
     
-    // Detector de desconexiones para notificaciones flotantes
+    // Detector de desconexiones para notificaciones flotantes (Administrador Remoto)
     if (db.devices) {
         db.devices.forEach(dev => {
             if (estadosPreviosDispositivos[dev.id] !== undefined) {
                 const estabaOnline = estadosPreviosDispositivos[dev.id] === false;
                 const estaOfflineAhora = dev.isOffline === true;
 
-                if (estabaOnline && estaOfflineAhora) dispararNotificacionFlotante(dev);
+                if (estabaOnline && estaOfflineAhora) {
+                    if (typeof dispararNotificacionFlotante === "function") dispararNotificacionFlotante(dev);
+                }
             }
             estadosPreviosDispositivos[dev.id] = dev.isOffline || false;
         });
@@ -97,16 +102,6 @@ function dispararNotificacionFlotante(dev) {
     const notificacion = new Notification(`⚠️ ESP32 DESCONECTADA`, opciones);
     notificacion.onclick = function() { window.focus(); this.close(); };
     playBeep();
-}
-
-function poblarFiltroCajerosAdmin() {
-    const userFilter = document.getElementById('filterHistoryUser');
-    if (userFilter) {
-        const currentSelected = userFilter.value || 'all';
-        userFilter.innerHTML = `<option value="all">Todos los usuarios</option><option value="Administrador">Administrador</option>`;
-        db.employees.forEach(emp => { userFilter.innerHTML += `<option value="${emp.name}">${emp.name}</option>`; });
-        userFilter.value = currentSelected;
-    }
 }
 
 // ===================================================================
@@ -173,12 +168,28 @@ function switchTab(tabId) {
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
     document.getElementById(`tabNav-${tabId}`).classList.add('active');
     document.getElementById(`tab-${tabId}`).classList.add('active');
-    if(tabId === 'admin') { poblarFiltroCajerosAdmin(); renderAdminTables(); renderHistoryTable(); }
+    
+    if(tabId === 'admin') { 
+        cargarPreciosUI();
+        poblarFiltroCajerosAdmin();
+        renderAdminTables(); 
+        renderHistoryTable(); 
+    }
     if(tabId === 'caja') updateCajaUI();
 }
 
+function poblarFiltroCajerosAdmin() {
+    const userFilter = document.getElementById('filterHistoryUser');
+    if (userFilter) {
+        const currentSelected = userFilter.value || 'all';
+        userFilter.innerHTML = `<option value="all">Todos los usuarios</option><option value="Administrador">Administrador</option>`;
+        db.employees.forEach(emp => { userFilter.innerHTML += `<option value="${emp.name}">${emp.name}</option>`; });
+        userFilter.value = currentSelected;
+    }
+}
+
 // ===================================================================
-// 5. MATEMÁTICA EN VIVO (SIN FUNCIONES DE CONTROL)
+// 5. MATEMÁTICA EN VIVO Y CÁLCULO DE PRECIOS
 // ===================================================================
 function getElapsedMs(dev) {
     if (!dev.running) return 0;
@@ -192,21 +203,34 @@ function calcularCobroEfectivo(tipo, controles, msTranscurridos, esPromoTD, limi
     if (mins < 1) return 0.00; 
     if (limit && mins > limit) mins = limit;
 
-    let minsEfectivos = mins;
-    if (!limit) {
-        if (mins >= 30 && mins < 60) minsEfectivos -= 5;
-        else if (mins >= 60 && mins < 90) minsEfectivos -= 8;
-        else if (mins >= 90 && mins < 120) minsEfectivos -= 10;
-        else if (mins >= 120) minsEfectivos -= 15;
-        if (minsEfectivos < 0) minsEfectivos = 0;
-    }
-
     let total = 0;
-    if (tipo === 'PC') { total = (25 / 60) * minsEfectivos; } 
-    else {
-        let t30 = 15, t60 = 25;
-        if (controles == 2) { t30 = 20; t60 = 30; } else if (controles == 3) { t30 = 25; t60 = 35; } else if (controles == 4) { t30 = 30; t60 = 40; }
-        total = minsEfectivos <= 30 ? (t30 / 30) * minsEfectivos : (t60 / 60) * minsEfectivos;
+    let s = db.settings || { p15: 8, p30: 15, p45: 20, p60: 25, ext1: 5, ext2: 10, ext3: 15 };
+    
+    if (tipo === 'PC') {
+        total = (s.p60 / 60) * mins;
+    } else {
+        let costoExtraHora = 0;
+        if (controles == 2) costoExtraHora = s.ext1;
+        else if (controles == 3) costoExtraHora = s.ext2;
+        else if (controles == 4) costoExtraHora = s.ext3;
+        
+        let t15 = s.p15 + (costoExtraHora * 0.25);
+        let t30 = s.p30 + (costoExtraHora * 0.50);
+        let t45 = s.p45 + (costoExtraHora * 0.75);
+        let t60 = s.p60 + costoExtraHora;
+
+        let horasEnteras = Math.floor(mins / 60);
+        let minsRestantes = mins % 60;
+        let cobroHoras = horasEnteras * t60;
+        
+        let cobroFraccion = 0;
+        if (minsRestantes > 0) {
+            if (minsRestantes <= 15) cobroFraccion = (t15 / 15) * minsRestantes;
+            else if (minsRestantes <= 30) cobroFraccion = t15 + (((t30 - t15) / 15) * (minsRestantes - 15));
+            else if (minsRestantes <= 45) cobroFraccion = t30 + (((t45 - t30) / 15) * (minsRestantes - 30));
+            else cobroFraccion = t45 + (((t60 - t45) / 15) * (minsRestantes - 45));
+        }
+        total = cobroHoras + cobroFraccion;
     }
     return Math.max(5.00, total);
 }
@@ -219,7 +243,34 @@ function updateCajaUI() {
     document.getElementById('cajaSesionesTurno').innerText = db.currentShift[currentRole].sesiones;
 }
 
-// CRUD Admin...
+// ===================================================================
+// 6. ADMINISTRACIÓN AVANZADA (CRUD)
+// ===================================================================
+function guardarPrecios() {
+    db.settings = {
+        p15: parseFloat(document.getElementById('cfg-p15').value) || 8,
+        p30: parseFloat(document.getElementById('cfg-p30').value) || 15,
+        p45: parseFloat(document.getElementById('cfg-p45').value) || 20,
+        p60: parseFloat(document.getElementById('cfg-p60').value) || 25,
+        ext1: parseFloat(document.getElementById('cfg-ext1').value) || 5,  
+        ext2: parseFloat(document.getElementById('cfg-ext2').value) || 10, 
+        ext3: parseFloat(document.getElementById('cfg-ext3').value) || 15  
+    };
+    saveDB();
+    alert("Precios actualizados en la nube correctamente.");
+}
+
+function cargarPreciosUI() {
+    if(!db.settings) return;
+    document.getElementById('cfg-p15').value = db.settings.p15;
+    document.getElementById('cfg-p30').value = db.settings.p30;
+    document.getElementById('cfg-p45').value = db.settings.p45;
+    document.getElementById('cfg-p60').value = db.settings.p60;
+    document.getElementById('cfg-ext1').value = db.settings.ext1;
+    document.getElementById('cfg-ext2').value = db.settings.ext2;
+    document.getElementById('cfg-ext3').value = db.settings.ext3;
+}
+
 function guardarDispositivo() {
     const id = document.getElementById('editDevId').value, name = document.getElementById('devName').value.trim(), ip = document.getElementById('devIP').value.trim(), type = document.getElementById('devType').value;
     if(!name || !ip) return alert("Nombre e IP son obligatorios.");
@@ -261,7 +312,7 @@ function cancelarEdicionEmp() {
 function eliminarEmpleado(id) { const emp = db.employees.find(e => e.id === id); if(confirm(`¿Dar de baja a ${emp.name}?`)) { db.employees = db.employees.filter(e => e.id !== id); delete db.currentShift[emp.name]; saveDB(); } }
 
 // ===================================================================
-// 6. MOTORES DE RENDERIZADO VISUAL (MODO LECTURA)
+// 7. MOTORES DE RENDERIZADO VISUAL
 // ===================================================================
 function renderAdminTables() {
     const devTbody = document.getElementById('adminDevicesTableBody');
@@ -276,43 +327,36 @@ function renderHistoryTable() {
     const tbody = document.getElementById('historyTableBody');
     if(!tbody) return;
     
-    // 1. Crear una copia del arreglo original para no alterar la base de datos cruda
     let filtrados = [...db.history]; 
     const ahora = new Date();
 
-    // 2. Aplicar filtros de fecha
-    if (range === 'day') {
-        filtrados = filtrados.filter(h => new Date(h.timestamp).toDateString() === ahora.toDateString());
-    } else if (range === 'week') {
-        filtrados = filtrados.filter(h => new Date(h.timestamp) >= new Date(ahora.getTime() - 7*24*60*60*1000));
-    } else if (range === 'month') {
-        filtrados = filtrados.filter(h => new Date(h.timestamp).getMonth() === ahora.getMonth() && new Date(h.timestamp).getFullYear() === ahora.getFullYear());
-    }
+    if (range === 'day') filtrados = filtrados.filter(h => new Date(h.timestamp).toDateString() === ahora.toDateString());
+    else if (range === 'week') filtrados = filtrados.filter(h => new Date(h.timestamp) >= new Date(ahora.getTime() - 7*24*60*60*1000));
+    else if (range === 'month') filtrados = filtrados.filter(h => new Date(h.timestamp).getMonth() === ahora.getMonth() && new Date(h.timestamp).getFullYear() === ahora.getFullYear());
+    
+    if (userFilter !== 'all') filtrados = filtrados.filter(h => h.cajero === userFilter);
 
-    // 3. Aplicar filtro de usuario
-    if (userFilter !== 'all') {
-        filtrados = filtrados.filter(h => h.cajero === userFilter);
-    }
-
-    // --- NUEVA REGLA: ORDENAR DE MÁS RECIENTE A MÁS ANTIGUO ---
+    // Orden descendente (más recientes arriba)
     filtrados.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
-    // 4. Calcular totales y dibujar la tabla
     let inTot = 0, sobTot = 0;
     tbody.innerHTML = filtrados.map(h => {
         h.type.includes("Sobrante") ? sobTot += h.monto : inTot += h.monto;
+        let horarioString = h.startStr ? `${h.startStr} a ${h.endStr}` : 'N/A';
         
         return `<tr>
-            <td>${new Date(h.timestamp).toLocaleString([],{dateStyle:'short',timeStyle:'short'})}</td>
+            <td>${new Date(h.timestamp).toLocaleString([],{dateStyle:'short'})}</td>
             <td>${h.device}</td>
             <td>${h.cajero}</td>
-            <td>${h.durationMins}m</td>
+            <td style="line-height: 1.2;">
+                ${horarioString}<br>
+                <small style="color:var(--xbox-green); font-weight:bold;">(${h.durationMins} min)</small>
+            </td>
             <td><span class="status-badge ${h.type.includes('Sobrante')?'status-update':'status-active'}">${h.type}</span></td>
             <td style="color:var(--xbox-green); font-weight:bold;">$${parseFloat(h.monto).toFixed(2)}</td>
         </tr>`;
     }).join('');
     
-    // 5. Actualizar los marcadores de dinero
     document.getElementById('adminTotalIngresos').innerText = `$${inTot.toFixed(2)}`;
     document.getElementById('adminTotalSobrantes').innerText = `$${sobTot.toFixed(2)}`;
 }
@@ -358,9 +402,12 @@ function render() {
                 </div>
                 <div class="device-title">${dev.name}</div>
                 <div class="timer-display" id="timer-${dev.id}" style="${dev.isOffline ? 'color:#ff4444; font-size:18px;' : ''}">${tStr}</div>
-                <div class="requested-time-label" id="label-${dev.id}" style="color: #aaaaaa; font-size: 13px; margin-top: -6px; margin-bottom: 8px; font-weight: 500; letter-spacing: 0.5px;">
-                    ${lStr ? `⏱️ Tipo: ${lStr}` : ''}
+                
+                <div class="requested-time-label" id="label-${dev.id}" style="color: #aaaaaa; font-size: 13px; margin-top: -6px; margin-bottom: 8px; font-weight: 500; letter-spacing: 0.5px; line-height: 1.4;">
+                    ${lStr ? `⏱️ Tipo: ${lStr}<br>` : ''}
+                    ${dev.type === 'Xbox' && dev.running ? `<span style="color: var(--xbox-green);">🎮 Controles: ${dev.controls || 1}</span>` : ''}
                 </div>
+
                 <div class="cost-display" id="cost-${dev.id}">${cStr}</div>
                 
                 <div style="text-align:center; padding: 15px 10px; margin-top: 10px; background: rgba(0,0,0,0.2); border-radius: 6px; border: 1px dashed var(--border-color); color: var(--text-muted); font-size: 13px; font-weight: 500;">
@@ -371,7 +418,7 @@ function render() {
 }
 
 // ===================================================================
-// 7. ACTUALIZACIÓN VISUAL EN VIVO (RELOJES)
+// 8. ACTUALIZACIÓN VISUAL EN VIVO (RELOJES)
 // ===================================================================
 document.addEventListener("DOMContentLoaded", () => {
     const loginPinInput = document.getElementById("loginPinInput");
