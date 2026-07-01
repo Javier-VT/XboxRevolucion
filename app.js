@@ -209,30 +209,36 @@ function calcularCobroEfectivo(tipo, controles, msTranscurridos, esPromoTD, limi
     if (tipo === 'PC') {
         total = (s.p60 / 60) * mins;
     } else {
+        // 1. CÁLCULO DEL TIEMPO BASE (Independiente de los controles)
+        let horasEnteras = Math.floor(mins / 60);
+        let minsRestantes = mins % 60;
+        let cobroBase = horasEnteras * s.p60;
+        
+        if (minsRestantes > 0) {
+            if (minsRestantes <= 15) cobroBase += (s.p15 / 15) * minsRestantes;
+            else if (minsRestantes <= 30) cobroBase += s.p15 + (((s.p30 - s.p15) / 15) * (minsRestantes - 15));
+            else if (minsRestantes <= 45) cobroBase += s.p30 + (((s.p45 - s.p30) / 15) * (minsRestantes - 30));
+            else cobroBase += s.p45 + (((s.p60 - s.p45) / 15) * (minsRestantes - 45));
+        }
+
+        // 2. CÁLCULO DE CONTROLES EXTRA (Regla de 10 minutos)
         let costoExtraHora = 0;
         if (controles == 2) costoExtraHora = s.ext1;
         else if (controles == 3) costoExtraHora = s.ext2;
         else if (controles == 4) costoExtraHora = s.ext3;
-        
-        let t15 = s.p15 + (costoExtraHora * 0.25);
-        let t30 = s.p30 + (costoExtraHora * 0.50);
-        let t45 = s.p45 + (costoExtraHora * 0.75);
-        let t60 = s.p60 + costoExtraHora;
 
-        let horasEnteras = Math.floor(mins / 60);
-        let minsRestantes = mins % 60;
-        let cobroHoras = horasEnteras * t60;
+        let cobroControlesExtra = 0;
         
-        let cobroFraccion = 0;
-        if (minsRestantes > 0) {
-            if (minsRestantes <= 15) cobroFraccion = (t15 / 15) * minsRestantes;
-            else if (minsRestantes <= 30) cobroFraccion = t15 + (((t30 - t15) / 15) * (minsRestantes - 15));
-            else if (minsRestantes <= 45) cobroFraccion = t30 + (((t45 - t30) / 15) * (minsRestantes - 30));
-            else cobroFraccion = t45 + (((t60 - t45) / 15) * (minsRestantes - 45));
+        // Si pasan de 10 minutos, se cobra el control extra (escalable por hora iniciada)
+        if (controles > 1 && mins >= 10) {
+            let horasIniciadas = Math.ceil(mins / 60); 
+            cobroControlesExtra = costoExtraHora * horasIniciadas;
         }
-        total = cobroHoras + cobroFraccion;
+
+        total = cobroBase + cobroControlesExtra;
     }
-    return Math.max(5.00, total);
+    
+    return Math.max(5.00, total); // Mínimo 5 pesos
 }
 
 function updateCajaUI() {
@@ -323,18 +329,42 @@ function renderAdminTables() {
 
 function renderHistoryTable() {
     const range = document.getElementById('filterHistoryRange')?.value || 'all';
+    const dateInput = document.getElementById('filterHistoryDate');
     const userFilter = document.getElementById('filterHistoryUser')?.value || 'all';
     const tbody = document.getElementById('historyTableBody');
     if(!tbody) return;
     
+    // Mostrar u ocultar el calendario nativo
+    if (range === 'exact' && dateInput) {
+        dateInput.style.display = 'inline-block';
+    } else if (dateInput) {
+        dateInput.style.display = 'none';
+        dateInput.value = ''; // Limpiar si cambian de opción
+    }
+
     let filtrados = [...db.history]; 
     const ahora = new Date();
 
-    if (range === 'day') filtrados = filtrados.filter(h => new Date(h.timestamp).toDateString() === ahora.toDateString());
-    else if (range === 'week') filtrados = filtrados.filter(h => new Date(h.timestamp) >= new Date(ahora.getTime() - 7*24*60*60*1000));
-    else if (range === 'month') filtrados = filtrados.filter(h => new Date(h.timestamp).getMonth() === ahora.getMonth() && new Date(h.timestamp).getFullYear() === ahora.getFullYear());
+    // Filtros de Rango y Fecha
+    if (range === 'day') {
+        filtrados = filtrados.filter(h => new Date(h.timestamp).toDateString() === ahora.toDateString());
+    } else if (range === 'week') {
+        filtrados = filtrados.filter(h => new Date(h.timestamp) >= new Date(ahora.getTime() - 7*24*60*60*1000));
+    } else if (range === 'month') {
+        filtrados = filtrados.filter(h => new Date(h.timestamp).getMonth() === ahora.getMonth() && new Date(h.timestamp).getFullYear() === ahora.getFullYear());
+    } else if (range === 'exact' && dateInput?.value) {
+        // Filtrar por el YYYY-MM-DD elegido en el calendario
+        filtrados = filtrados.filter(h => {
+            const hDate = new Date(h.timestamp);
+            const localYMD = hDate.getFullYear() + "-" + String(hDate.getMonth()+1).padStart(2, '0') + "-" + String(hDate.getDate()).padStart(2, '0');
+            return localYMD === dateInput.value;
+        });
+    }
     
-    if (userFilter !== 'all') filtrados = filtrados.filter(h => h.cajero === userFilter);
+    // Filtro de Usuario
+    if (userFilter !== 'all') {
+        filtrados = filtrados.filter(h => h.cajero === userFilter);
+    }
 
     // Orden descendente (más recientes arriba)
     filtrados.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
