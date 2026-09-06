@@ -1,151 +1,307 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Xbox Revolución · Recuperación GitHub/Render</title>
-  <style>
-    :root{color-scheme:dark;--bg:#090b0d;--card:#13171b;--line:#283038;--text:#f2f5f7;--muted:#9ba7b1;--green:#22c55e;--yellow:#f59e0b;--red:#ef4444}
-    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-family:Segoe UI,system-ui,sans-serif;padding:28px}
-    .wrap{max-width:1000px;margin:auto}.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px;margin-bottom:16px}
-    h1{margin:0 0 8px;font-size:26px} h2{font-size:18px;margin:0 0 12px}.muted{color:var(--muted)}
-    .ok{color:var(--green)} .warn{color:var(--yellow)} .bad{color:var(--red)}
-    button{border:0;border-radius:10px;padding:12px 16px;font-weight:700;cursor:pointer;background:var(--green);color:#061109;margin:5px 8px 5px 0}
-    button.secondary{background:#26313a;color:white}.row{display:flex;gap:12px;flex-wrap:wrap}
-    table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}th,td{text-align:left;padding:10px;border-bottom:1px solid var(--line);vertical-align:top}
-    code{background:#0a0e11;padding:2px 6px;border-radius:5px;word-break:break-all}.big{font-size:18px;font-weight:700}
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#080b09">
+    <meta name="description" content="Xbox Revolución · panel de supervisión remota">
+    <title>Xbox Revolución · Control Center Cloud</title>
+    <link rel="icon" href="logo.png" type="image/png">
+    <link rel="stylesheet" href="style.css">
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+    <script src="app.js" defer></script>
 </head>
 <body>
-<div class="wrap">
-  <div class="card">
-    <h1>Recuperación de almacenamiento web</h1>
-    <p class="muted">Esta página <b>solo lee</b> el localStorage del origen donde está publicada. No usa Firebase, no hace fetch y no modifica datos.</p>
-    <div id="origin" class="big"></div>
-    <p id="originHelp"></p>
-    <div class="row">
-      <button onclick="exportAll()">Exportar TODO el localStorage</button>
-      <button class="secondary" onclick="scan()">Volver a analizar</button>
+    <div class="app-bg" aria-hidden="true"></div>
+
+    <div id="loginOverlay" class="login-overlay">
+        <section class="login-shell" aria-labelledby="loginTitle">
+            <div class="login-brand">
+                <div class="login-logo-wrap">
+                    <img src="logo.png" alt="Xbox Revolución" class="login-logo">
+                </div>
+                <div>
+                    <p class="eyebrow">CONTROL CENTER CLOUD</p>
+                    <h1 id="loginTitle">Xbox <span>Revolución</span></h1>
+                    <p class="login-subtitle">Supervisión remota de terminales, caja e incidencias en tiempo real.</p>
+                </div>
+            </div>
+
+            <div id="loginSystemState" class="login-state">
+                <span class="status-dot" id="loginStateDot"></span>
+                <span id="loginStateText">Conectando con la nube…</span>
+            </div>
+
+            <div class="login-form">
+                <div class="owner-access-badge">
+                    <span class="owner-access-dot"></span>
+                    <div>
+                        <strong>Acceso del propietario</strong>
+                        <small>Solo se solicita el PIN la primera vez en este navegador.</small>
+                    </div>
+                </div>
+
+                <label for="loginPinInput">PIN del propietario</label>
+                <input type="password" id="loginPinInput" inputmode="numeric" placeholder="••••" autocomplete="current-password" maxlength="12">
+
+                <label class="remember-owner-row" for="rememberOwnerDevice">
+                    <input type="checkbox" id="rememberOwnerDevice" checked>
+                    <span>
+                        <strong>Recordar este dispositivo</strong>
+                        <small>No volver a pedir el PIN al entrar desde este navegador.</small>
+                    </span>
+                </label>
+
+                <button class="btn btn-primary btn-lg" onclick="realizarLogin()">Entrar al panel</button>
+                <p id="loginError" class="form-error" role="alert">PIN incorrecto.</p>
+            </div>
+
+            <div class="login-footer">
+                <span>Supervisión desde cualquier lugar</span>
+                <span>•</span>
+                <span>Sincronización Firebase</span>
+            </div>
+        </section>
     </div>
-  </div>
 
-  <div class="card">
-    <h2>Copias detectadas</h2>
-    <div id="summary" class="muted">Analizando…</div>
-    <div style="overflow:auto">
-      <table>
-        <thead><tr><th>Clave</th><th>Guardado</th><th>Historial</th><th>Primero</th><th>Último</th><th>Equipos</th><th>Empleados</th></tr></thead>
-        <tbody id="rows"></tbody>
-      </table>
+    <div id="mainApp" class="main-app">
+        <div class="container">
+            <header class="topbar">
+                <div class="brand-container">
+                    <div class="logo-frame">
+                        <img src="logo.png" alt="Xbox Revolución" class="logo-img">
+                    </div>
+                    <div class="brand-copy">
+                        <p class="eyebrow">CONTROL CENTER CLOUD</p>
+                        <h1>Xbox <span>Revolución</span></h1>
+                    </div>
+                </div>
+
+                <div class="topbar-status">
+                    <div class="sync-chip" id="syncChip" title="Estado de la conexión con Firebase">
+                        <span class="status-dot" id="systemStatusDot"></span>
+                        <div>
+                            <span id="systemStatusText">Conectando…</span>
+                            <small id="lastSyncText">Sin sincronización</small>
+                        </div>
+                    </div>
+
+                    <div class="clock-block">
+                        <span class="clock-label">Hora local</span>
+                        <span id="liveClock">00:00:00</span>
+                    </div>
+
+                    <div class="user-block">
+                        <span class="user-label">Sesión activa</span>
+                        <span id="currentUserNameDisplay" class="user-name-display">Propietario</span>
+                    </div>
+
+                    <button class="btn btn-ghost btn-compact" onclick="cerrarSesion()">Cerrar acceso</button>
+                </div>
+            </header>
+
+            <div id="connectionBanner" class="connection-banner hidden" role="status"></div>
+
+            <nav class="tabs" aria-label="Secciones del sistema">
+                <button class="tab-btn active" id="tabNav-dashboard" onclick="switchTab('dashboard')">
+                    <span class="tab-kicker">01</span> Terminales
+                </button>
+                <button class="tab-btn" id="tabNav-caja" onclick="switchTab('caja')">
+                    <span class="tab-kicker">02</span> Caja / Turno
+                </button>
+                <button class="tab-btn" id="tabNav-admin" onclick="switchTab('admin')" style="display:none;">
+                    <span class="tab-kicker">03</span> Administración
+                </button>
+            </nav>
+
+            <main>
+                <section id="tab-dashboard" class="tab-content active">
+                    <div class="section-heading dashboard-heading">
+                        <div>
+                            <p class="eyebrow">SUPERVISIÓN EN VIVO</p>
+                            <h2>Estado de terminales</h2>
+                            <p>Vista remota del local. El control físico continúa ejecutándose desde el sistema local.</p>
+                        </div>
+                        <div class="dashboard-live-total">
+                            <span>Cobro activo estimado</span>
+                            <strong id="dashboardLiveRevenue">$0.00</strong>
+                        </div>
+                    </div>
+
+                    <div class="summary-grid" id="dashboardSummary">
+                        <article class="summary-card">
+                            <span class="summary-label">En uso</span>
+                            <strong id="summaryActive">0</strong>
+                            <small>sesiones activas</small>
+                        </article>
+                        <article class="summary-card">
+                            <span class="summary-label">Disponibles</span>
+                            <strong id="summaryAvailable">0</strong>
+                            <small>listas para renta</small>
+                        </article>
+                        <article class="summary-card">
+                            <span class="summary-label">Mantenimiento</span>
+                            <strong id="summaryUpdating">0</strong>
+                            <small>equipos en proceso</small>
+                        </article>
+                        <article class="summary-card warning-card">
+                            <span class="summary-label">Sin conexión</span>
+                            <strong id="summaryOffline">0</strong>
+                            <small>requieren revisión</small>
+                        </article>
+                    </div>
+
+                    <div class="grid" id="devicesGrid"></div>
+                </section>
+
+                <section id="tab-caja" class="tab-content">
+                    <div class="section-heading">
+                        <div>
+                            <p class="eyebrow">CONTROL DE EFECTIVO</p>
+                            <h2 id="cajaTitle">Corte de caja actual</h2>
+                            <p>Consulta el turno y registra ajustes desde el panel remoto.</p>
+                        </div>
+                    </div>
+
+                    <div class="metrics-grid">
+                        <article class="metric-card metric-accent">
+                            <p>Efectivo esperado</p>
+                            <h3 id="cajaEfectivoEsperado">$0.00</h3>
+                        </article>
+                        <article class="metric-card metric-warning">
+                            <p>Sobrantes / Ajustes</p>
+                            <h3 id="cajaSobrantes">$0.00</h3>
+                        </article>
+                        <article class="metric-card">
+                            <p>Sesiones del turno</p>
+                            <h3 id="cajaSesionesTurno">0</h3>
+                        </article>
+                    </div>
+
+                    <section class="panel">
+                        <div class="panel-title-row">
+                            <div>
+                                <p class="eyebrow">MOVIMIENTO MANUAL</p>
+                                <h3>Registrar sobrante o ajuste</h3>
+                            </div>
+                        </div>
+                        <div id="caja-form" class="cash-form">
+                            <input type="number" id="sobranteMonto" min="0" step="0.01" placeholder="Monto ($)">
+                            <input type="text" id="sobranteNota" maxlength="120" placeholder="Motivo o nota…">
+                            <button class="btn btn-warning" onclick="registrarSobrante()">Registrar ajuste</button>
+                        </div>
+                    </section>
+
+                    <div class="turn-actions">
+                        <button class="btn btn-danger" onclick="terminarTurno()">Terminar turno y resetear caja</button>
+                    </div>
+                </section>
+
+                <section id="tab-admin" class="tab-content">
+                    <div id="adminProtectedContent">
+                        <div class="section-heading">
+                            <div>
+                                <p class="eyebrow">CONFIGURACIÓN Y AUDITORÍA</p>
+                                <h2>Administración</h2>
+                                <p>Precios, historial, terminales y personal sincronizados con la base central.</p>
+                            </div>
+                        </div>
+
+                        <section class="admin-section">
+                            <div class="panel-title-row">
+                                <div>
+                                    <p class="eyebrow">TARIFAS</p>
+                                    <h2>Configuración de precios</h2>
+                                    <p class="section-help">Base para un control y cargos adicionales por hora.</p>
+                                </div>
+                            </div>
+
+                            <div class="price-grid">
+                                <label class="field-stack"><span class="field-label">15 minutos ($)</span><input type="number" id="cfg-p15" min="0" step="0.01"></label>
+                                <label class="field-stack"><span class="field-label">30 minutos ($)</span><input type="number" id="cfg-p30" min="0" step="0.01"></label>
+                                <label class="field-stack"><span class="field-label">45 minutos ($)</span><input type="number" id="cfg-p45" min="0" step="0.01"></label>
+                                <label class="field-stack"><span class="field-label">60 minutos ($)</span><input type="number" id="cfg-p60" min="0" step="0.01"></label>
+                                <label class="field-stack"><span class="field-label">+1 control ($/h)</span><input type="number" id="cfg-ext1" min="0" step="0.01"></label>
+                                <label class="field-stack"><span class="field-label">+2 controles ($/h)</span><input type="number" id="cfg-ext2" min="0" step="0.01"></label>
+                                <label class="field-stack"><span class="field-label">+3 controles ($/h)</span><input type="number" id="cfg-ext3" min="0" step="0.01"></label>
+                            </div>
+                            <div class="form-actions"><button class="btn btn-primary" onclick="guardarPrecios()">Guardar precios</button></div>
+                        </section>
+
+                        <section class="admin-section history-panel">
+                            <div class="panel-title-row history-title-row">
+                                <div>
+                                    <p class="eyebrow">TRAZABILIDAD</p>
+                                    <h2>Historial de ventas</h2>
+                                </div>
+                                <div id="historyFiltersContainer" class="filter-row">
+                                    <select id="filterHistoryRange" onchange="renderHistoryTable()">
+                                        <option value="all">Todo el historial</option>
+                                        <option value="day">Hoy</option>
+                                        <option value="week">Esta semana</option>
+                                        <option value="month">Este mes</option>
+                                        <option value="exact">Fecha exacta…</option>
+                                    </select>
+                                    <input type="date" id="filterHistoryDate" onchange="renderHistoryTable()" class="date-filter">
+                                    <select id="filterHistoryUser" onchange="renderHistoryTable()"></select>
+                                </div>
+                            </div>
+
+                            <div class="metrics-grid compact-metrics">
+                                <article class="metric-card metric-accent"><p>Ingresos brutos</p><h3 id="adminTotalIngresos">$0.00</h3></article>
+                                <article class="metric-card metric-warning"><p>Sobrantes totales</p><h3 id="adminTotalSobrantes">$0.00</h3></article>
+                            </div>
+
+                            <div class="table-responsive table-scroll">
+                                <table>
+                                    <thead><tr><th>Fecha</th><th>Terminal</th><th>Usuario</th><th>Horario / Tiempo</th><th>Operación</th><th>Monto</th></tr></thead>
+                                    <tbody id="historyTableBody"></tbody>
+                                </table>
+                            </div>
+                        </section>
+
+                        <section class="admin-section">
+                            <div class="panel-title-row">
+                                <div>
+                                    <p class="eyebrow">INFRAESTRUCTURA</p>
+                                    <h2>Gestión de terminales</h2>
+                                </div>
+                            </div>
+                            <input type="hidden" id="editDevId">
+                            <div class="form-row">
+                                <input type="text" id="devName" placeholder="Nombre (Ej: Xbox 11)" maxlength="50">
+                                <input type="text" id="devIP" placeholder="IP (Ej: 192.168.1.80)" maxlength="80">
+                                <select id="devType"><option value="Xbox">Xbox</option><option value="PC">Computadora (PC)</option></select>
+                                <button class="btn btn-primary" id="btnSaveDev" onclick="guardarDispositivo()">Agregar terminal</button>
+                                <button class="btn btn-danger" id="btnCancelDev" onclick="cancelarEdicionDev()" style="display:none;">Cancelar</button>
+                            </div>
+                            <div class="table-responsive admin-table-scroll"><table><thead><tr><th>Terminal</th><th>Tipo</th><th>IP</th><th>Acciones</th></tr></thead><tbody id="adminDevicesTableBody"></tbody></table></div>
+                        </section>
+
+                        <section class="admin-section">
+                            <div class="panel-title-row">
+                                <div>
+                                    <p class="eyebrow">PERSONAL</p>
+                                    <h2>Gestión de usuarios</h2>
+                                    <p class="section-help">Crea o modifica cajeros y su PIN de acceso.</p>
+                                </div>
+                            </div>
+                            <input type="hidden" id="editEmpId">
+                            <div class="form-row">
+                                <input type="text" id="empName" placeholder="Nombre completo" maxlength="80">
+                                <input type="text" id="empPin" inputmode="numeric" placeholder="PIN" maxlength="12">
+                                <button class="btn btn-primary" id="btnSaveEmp" onclick="guardarEmpleado()">Agregar empleado</button>
+                                <button class="btn btn-danger" id="btnCancelEmp" onclick="cancelarEdicionEmp()" style="display:none;">Cancelar</button>
+                            </div>
+                            <div class="table-responsive employee-table-scroll"><table><thead><tr><th>Nombre / Rol</th><th>PIN asignado</th><th>Acciones</th></tr></thead><tbody id="adminEmployeesTableBody"></tbody></table></div>
+                        </section>
+                    </div>
+                </section>
+            </main>
+        </div>
     </div>
-  </div>
 
-  <div class="card">
-    <h2>Todas las claves del origen</h2>
-    <div id="keys" class="muted"></div>
-  </div>
-</div>
-
-<script>
-function safeJSON(raw){ try{return JSON.parse(raw)}catch(e){return null} }
-function findDB(obj, depth=0){
-  if(!obj || typeof obj!=="object" || depth>5) return null;
-  if(Array.isArray(obj.history) || obj.devices || obj.employees) return obj;
-  if(obj.db && typeof obj.db==="object") {
-    const x=findDB(obj.db, depth+1); if(x) return x;
-  }
-  if(obj.xbox_rev_db && typeof obj.xbox_rev_db==="object") {
-    const x=findDB(obj.xbox_rev_db, depth+1); if(x) return x;
-  }
-  for(const v of Object.values(obj)){
-    if(v && typeof v==="object" && !Array.isArray(v)){
-      const x=findDB(v, depth+1); if(x) return x;
-    }
-  }
-  return null;
-}
-function asArray(v){ return Array.isArray(v)?v:(v&&typeof v==="object"?Object.values(v):[]) }
-function fmtMs(ms){
-  if(!ms) return "—";
-  const d=new Date(Number(ms)); return isNaN(d)?String(ms):d.toLocaleString();
-}
-function analyze(key, raw){
-  const obj=safeJSON(raw);
-  if(!obj) return {key, savedAt:null, history:0, first:"—", last:"—", devices:0, employees:0, raw};
-  const db=findDB(obj);
-  if(!db) return {key, savedAt:obj.savedAt||null, history:0, first:"—", last:"—", devices:0, employees:0, raw};
-  const hist=asArray(db.history);
-  const times=hist.map(x=>x&&x.timestamp).filter(Boolean).sort();
-  return {
-    key,
-    savedAt:obj.savedAt || db.savedAt || null,
-    history:hist.length,
-    first:times[0]||"—",
-    last:times[times.length-1]||"—",
-    devices:asArray(db.devices).length,
-    employees:asArray(db.employees).length,
-    raw
-  };
-}
-function scan(){
-  const originEl=document.getElementById("origin");
-  const help=document.getElementById("originHelp");
-  originEl.textContent="Origen actual: "+location.origin;
-  if(location.protocol==="file:"){
-    originEl.className="big bad";
-    help.innerHTML='<span class="bad"><b>NO sirve para recuperar GitHub desde file://.</b></span> Sube este archivo al mismo dominio de GitHub Pages/Render que usabas y ábrelo desde esa URL.';
-  } else {
-    originEl.className="big ok";
-    help.innerHTML='<span class="ok"><b>Origen web correcto.</b></span> Si este es el mismo dominio que usabas para el panel, aquí veremos sus copias locales.';
-  }
-
-  const all=[];
-  for(let i=0;i<localStorage.length;i++){
-    const key=localStorage.key(i);
-    all.push(analyze(key, localStorage.getItem(key)));
-  }
-  all.sort((a,b)=>(b.history-a.history)||((b.savedAt||0)-(a.savedAt||0)));
-
-  document.getElementById("summary").innerHTML = all.length
-    ? `Se encontraron <b>${all.length}</b> claves. La tabla pone primero las que contienen más historial.`
-    : '<span class="warn"><b>No hay claves en localStorage para este origen/perfil.</b></span>';
-
-  document.getElementById("rows").innerHTML=all.map(x=>`
-    <tr>
-      <td><code>${esc(x.key)}</code></td>
-      <td>${esc(fmtMs(x.savedAt))}</td>
-      <td><b>${x.history}</b></td>
-      <td>${esc(x.first)}</td>
-      <td>${esc(x.last)}</td>
-      <td>${x.devices}</td>
-      <td>${x.employees}</td>
-    </tr>`).join("");
-
-  document.getElementById("keys").innerHTML = all.length
-    ? all.map(x=>`<div><code>${esc(x.key)}</code></div>`).join("")
-    : "Sin datos.";
-}
-function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]))}
-function exportAll(){
-  const entries={};
-  for(let i=0;i<localStorage.length;i++){
-    const k=localStorage.key(i);
-    entries[k]=localStorage.getItem(k);
-  }
-  const payload={
-    exportedAt:new Date().toISOString(),
-    origin:location.origin,
-    href:location.href,
-    entries
-  };
-  const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
-  const a=document.createElement("a");
-  a.href=URL.createObjectURL(blob);
-  a.download="xbox_rev_WEB_localStorage_COMPLETO.json";
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
-}
-scan();
-</script>
+    <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="true"></div>
 </body>
 </html>

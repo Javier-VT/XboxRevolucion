@@ -17,6 +17,7 @@ const firebaseConfig = {
 const DB_PATH = "xbox_rev_db";
 const CLAVE_ADMIN = "1980";
 const LOCAL_BACKUP_KEY = "xbox_rev_cloud_snapshot_v3";
+const OWNER_TRUST_KEY = "xbox_rev_owner_trusted_v1";
 const DEFAULT_SETTINGS = Object.freeze({ p15: 8, p30: 15, p45: 20, p60: 25, ext1: 5, ext2: 10, ext3: 15 });
 
 let database = null;
@@ -24,6 +25,7 @@ let currentRole = null;
 let activeTab = "dashboard";
 let isAdminAuthenticated = false;
 let cloudConnected = false;
+let cloudReady = false;
 let lastCloudSyncAt = null;
 let lastLocalBackupAt = null;
 let saveInProgress = false;
@@ -68,6 +70,9 @@ function normalizeDB(data) {
         pausedTime: 0,
         offlineSince: null,
         isOffline: false,
+        forcedOff: false,
+        forcedOffAt: null,
+        toleranceFreeMs: 0,
         ...dev
     }));
 
@@ -187,14 +192,18 @@ function initFirebase() {
 
         database.ref(DB_PATH).on("value", snapshot => {
             const data = snapshot.val();
+            cloudReady = true;
+
             if (data) {
                 db = normalizeDB(data);
                 lastCloudSyncAt = Date.now();
+
+                // Copia del navegador solo para recuperación manual.
+                // Nunca se restaura automáticamente sobre Firebase.
                 saveLocalBackup();
             }
 
             initShifts();
-            poblarSelectLogin();
             detectarCambiosOfflineParaNotificacion();
 
             if (currentRole) {
@@ -215,22 +224,33 @@ function initFirebase() {
 }
 
 async function saveDB(reason = "update") {
-    saveLocalBackup();
-    if (!database) {
-        toast("Cambio guardado localmente", "Firebase no está disponible en este momento.", "warning");
+    if (!database || !cloudReady) {
+        toast("Firebase todavía está cargando", "Espera unos segundos antes de guardar cambios.", "warning");
         renderSystemHealth();
         return false;
     }
 
     saveInProgress = true;
     renderSystemHealth();
+
     try {
-        await database.ref(DB_PATH).set(cloneClean(db));
+        const clean = cloneClean(db);
+
+        // Sin nodos de seguridad adicionales ni reemplazo total de xbox_rev_db.
+        await database.ref(DB_PATH).update({
+            devices: clean.devices || [],
+            employees: clean.employees || [],
+            history: clean.history || [],
+            currentShift: clean.currentShift || {},
+            settings: clean.settings || {}
+        });
+
+        saveLocalBackup();
         if (cloudConnected) lastCloudSyncAt = Date.now();
         return true;
     } catch (error) {
         console.error(`Error guardando (${reason}):`, error);
-        toast("Error de sincronización", "El cambio permanece en la copia local del navegador.", "danger");
+        toast("Error de sincronización", "No se pudo aplicar el cambio en Firebase.", "danger");
         return false;
     } finally {
         saveInProgress = false;
@@ -295,58 +315,90 @@ function playBeep() {
     } catch (_) {}
 }
 
-function poblarSelectLogin() {
-    const select = document.getElementById("loginUserSelect");
-    if (!select) return;
-    const previous = select.value;
-    select.innerHTML = `<option value="Administrador">Administrador</option>` + db.employees
-        .map(emp => `<option value="${escapeHTML(emp.id)}">${escapeHTML(emp.name)}</option>`)
-        .join("");
-    if (previous && [...select.options].some(o => o.value === previous)) select.value = previous;
+function isOwnerDeviceRemembered() {
+    try {
+        const raw = localStorage.getItem(OWNER_TRUST_KEY);
+        if (!raw) return false;
+        const value = JSON.parse(raw);
+        return value?.trusted === true;
+    } catch (_) {
+        return false;
+    }
 }
 
-function realizarLogin() {
-    const userId = document.getElementById("loginUserSelect")?.value;
-    const pinInput = document.getElementById("loginPinInput")?.value || "";
+function rememberOwnerDevice() {
+    try {
+        localStorage.setItem(OWNER_TRUST_KEY, JSON.stringify({
+            trusted: true,
+            savedAt: Date.now()
+        }));
+    } catch (error) {
+        console.warn("No se pudo recordar este dispositivo:", error);
+    }
+}
+
+function forgetOwnerDevice() {
+    try {
+        localStorage.removeItem(OWNER_TRUST_KEY);
+    } catch (_) {}
+}
+
+function activarSesionPropietario() {
+    currentRole = "Administrador";
+    isAdminAuthenticated = true;
+
     const errorMsg = document.getElementById("loginError");
-    let nombreValidado = null;
-    let esAdmin = false;
-
-    if (userId === "Administrador") {
-        if (pinInput === CLAVE_ADMIN) {
-            nombreValidado = "Administrador";
-            esAdmin = true;
-        }
-    } else {
-        const empleado = db.employees.find(e => String(e.id) === String(userId));
-        if (empleado && String(empleado.pin) === pinInput) nombreValidado = empleado.name;
-    }
-
-    if (!nombreValidado) {
-        if (errorMsg) errorMsg.style.display = "block";
-        return;
-    }
-
-    currentRole = nombreValidado;
-    isAdminAuthenticated = esAdmin;
     if (errorMsg) errorMsg.style.display = "none";
+
     const pin = document.getElementById("loginPinInput");
     if (pin) pin.value = "";
-    document.getElementById("loginOverlay").style.display = "none";
-    document.getElementById("mainApp").style.display = "block";
-    document.getElementById("currentUserNameDisplay").textContent = currentRole;
-    document.getElementById("tabNav-admin").style.display = isAdminAuthenticated ? "inline-flex" : "none";
+
+    const overlay = document.getElementById("loginOverlay");
+    const main = document.getElementById("mainApp");
+    if (overlay) overlay.style.display = "none";
+    if (main) main.style.display = "block";
+
+    const nameDisplay = document.getElementById("currentUserNameDisplay");
+    if (nameDisplay) nameDisplay.textContent = "Propietario";
+
+    const adminTab = document.getElementById("tabNav-admin");
+    if (adminTab) adminTab.style.display = "inline-flex";
+
     solicitarNotificaciones();
     switchTab("dashboard");
     refreshUI();
 }
 
+function realizarLogin() {
+    const pinInput = document.getElementById("loginPinInput")?.value || "";
+    const errorMsg = document.getElementById("loginError");
+
+    if (pinInput !== CLAVE_ADMIN) {
+        if (errorMsg) errorMsg.style.display = "block";
+        return;
+    }
+
+    if (document.getElementById("rememberOwnerDevice")?.checked) {
+        rememberOwnerDevice();
+    }
+
+    activarSesionPropietario();
+}
+
 function cerrarSesion() {
+    if (!confirm(
+        "¿Cerrar el acceso recordado en este dispositivo?\\n\\n" +
+        "La próxima vez se volverá a solicitar el PIN del propietario."
+    )) return;
+
+    forgetOwnerDevice();
+
     document.getElementById("mainApp").style.display = "none";
     document.getElementById("loginOverlay").style.display = "flex";
     currentRole = null;
     isAdminAuthenticated = false;
     activeTab = "dashboard";
+
     document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
     document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
     document.getElementById("tabNav-dashboard")?.classList.add("active");
@@ -382,8 +434,25 @@ function poblarFiltroCajerosAdmin() {
 
 function getElapsedMs(dev) {
     if (!dev.running || !dev.start) return 0;
-    const currentEnd = (dev.isOffline && dev.offlineSince) ? Number(dev.offlineSince) : Date.now();
+
+    let currentEnd = Date.now();
+    if (dev.forcedOff && dev.forcedOffAt) currentEnd = Number(dev.forcedOffAt);
+    else if (dev.isOffline && dev.offlineSince) currentEnd = Number(dev.offlineSince);
+
     return Math.max(0, currentEnd - Number(dev.start) - (Number(dev.pausedTime) || 0));
+}
+
+function getBillableMs(dev) {
+    const elapsed = getElapsedMs(dev);
+
+    if (dev.esPromoTD) return elapsed;
+
+    if (dev.limit) {
+        return Math.min(elapsed, Number(dev.limit) * 60000);
+    }
+
+    const freeToleranceMs = Math.max(0, Number(dev.toleranceFreeMs) || 0);
+    return Math.max(0, elapsed - freeToleranceMs);
 }
 
 function calcularCobroEfectivo(tipo, controles, msTranscurridos, esPromoTD, limit = null) {
@@ -449,7 +518,7 @@ function getDeviceTimerState(dev) {
         const diff = getElapsedMs(dev);
         const mins = diff / 60000;
         tStr = `${Math.floor(mins / 60).toString().padStart(2, "0")}:${Math.floor(mins % 60).toString().padStart(2, "0")}:${Math.floor((diff / 1000) % 60).toString().padStart(2, "0")}`;
-        cStr = formatMoney(calcularCobroEfectivo(dev.type, dev.controls, diff, dev.esPromoTD, dev.limit));
+        cStr = formatMoney(calcularCobroEfectivo(dev.type, dev.controls, getBillableMs(dev), dev.esPromoTD, null));
 
         if (dev.isOffline) tStr = `PAUSADO · ${tStr}`;
 
@@ -481,7 +550,7 @@ function renderDashboardSummary() {
     const available = db.devices.filter(d => !d.running && !d.isUpdating && !d.isOffline).length;
     const liveRevenue = db.devices.reduce((sum, dev) => {
         if (!dev.running) return sum;
-        return sum + calcularCobroEfectivo(dev.type, dev.controls, getElapsedMs(dev), dev.esPromoTD, dev.limit);
+        return sum + calcularCobroEfectivo(dev.type, dev.controls, getBillableMs(dev), dev.esPromoTD, null);
     }, 0);
 
     const map = {
@@ -758,7 +827,6 @@ function guardarEmpleado() {
     cancelarEdicionEmp();
     saveDB("employee-save").then(() => {
         renderAdminTables();
-        poblarSelectLogin();
         poblarFiltroCajerosAdmin();
         toast("Empleado guardado", name);
     });
@@ -792,7 +860,6 @@ function eliminarEmpleado(id) {
     delete db.currentShift[emp.name];
     saveDB("employee-delete").then(() => {
         renderAdminTables();
-        poblarSelectLogin();
         poblarFiltroCajerosAdmin();
         toast("Empleado dado de baja", emp.name, "warning");
     });
@@ -904,7 +971,6 @@ function actualizarRelojesEnVivo() {
 
 function refreshUI() {
     initShifts();
-    poblarSelectLogin();
     renderSystemHealth();
     if (!currentRole) return;
     render();
@@ -918,15 +984,17 @@ function refreshUI() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-    restoreLocalBackup();
     initShifts();
-    poblarSelectLogin();
     renderSystemHealth();
 
     const loginPinInput = document.getElementById("loginPinInput");
     if (loginPinInput) loginPinInput.addEventListener("keydown", event => {
         if (event.key === "Enter") realizarLogin();
     });
+
+    if (isOwnerDeviceRemembered()) {
+        activarSesionPropietario();
+    }
 
     initFirebase();
 });

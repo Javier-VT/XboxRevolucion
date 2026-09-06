@@ -1735,3 +1735,29 @@ tbody tr:hover {
 @media (max-width: 720px) {
     .remote-observer-note { align-items: flex-start; flex-direction: column; }
 }
+
+
+/* Acceso simplificado del propietario */
+.owner-access-badge{
+    display:flex; align-items:center; gap:12px; padding:12px 14px;
+    border:1px solid rgba(101,255,143,.16);
+    background:rgba(28,185,84,.07); border-radius:14px; margin-bottom:4px;
+}
+.owner-access-badge strong,.remember-owner-row strong{
+    display:block; color:var(--text,#f3f7f4); font-size:.9rem;
+}
+.owner-access-badge small,.remember-owner-row small{
+    display:block; margin-top:2px; color:var(--muted,#97a29a); line-height:1.35;
+}
+.owner-access-dot{
+    width:10px;height:10px;flex:0 0 10px;border-radius:50%;
+    background:#39d96f;box-shadow:0 0 16px rgba(57,217,111,.6);
+}
+.remember-owner-row{
+    display:flex !important;align-items:flex-start;gap:11px;padding:12px 13px;
+    border:1px solid rgba(255,255,255,.07);background:rgba(255,255,255,.025);
+    border-radius:13px;cursor:pointer;
+}
+.remember-owner-row input{
+    width:18px;height:18px;margin:2px 0 0;accent-color:#39d96f;flex:0 0 18px;
+}
