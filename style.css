@@ -1761,3 +1761,19 @@ tbody tr:hover {
 .remember-owner-row input{
     width:18px;height:18px;margin:2px 0 0;accent-color:#39d96f;flex:0 0 18px;
 }
+
+.cloud-supervisor-note{margin:0 0 14px;padding:10px 14px;border:1px solid rgba(79,255,135,.14);background:rgba(50,180,90,.06);border-radius:12px;color:var(--text-muted,#9ba7a0);font-size:.82rem;}
+
+
+/* Clases usadas por la edición Cloud que no tenían estilo */
+.field-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+.form-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 10px;
+}

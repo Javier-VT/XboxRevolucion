@@ -14,11 +14,13 @@ const firebaseConfig = {
     appId: "1:681073353068:web:4b0b0af8bbf0d2e667d349"
 };
 
+const APP_VERSION = "github-2.6.0-state-safe";
 const DB_PATH = "xbox_rev_db";
 const CLAVE_ADMIN = "1980";
 const LOCAL_BACKUP_KEY = "xbox_rev_cloud_snapshot_v3";
 const OWNER_TRUST_KEY = "xbox_rev_owner_trusted_v1";
 const DEFAULT_SETTINGS = Object.freeze({ p15: 8, p30: 15, p45: 20, p60: 25, ext1: 5, ext2: 10, ext3: 15 });
+const PROMO_TD_PRICE = 120;
 
 let database = null;
 let currentRole = null;
@@ -30,6 +32,7 @@ let lastCloudSyncAt = null;
 let lastLocalBackupAt = null;
 let saveInProgress = false;
 let estadosPreviosDispositivos = {};
+let lastRemoteDevices = [];
 
 let db = createDefaultDB();
 
@@ -43,6 +46,77 @@ function createDefaultDB() {
     };
 }
 
+
+function normalizeSessionModeValue(value) {
+    return ["free", "limited", "promo"].includes(value) ? value : null;
+}
+
+function normalizeOperationalStateValue(value) {
+    return ["available", "session", "maintenance"].includes(value) ? value : null;
+}
+
+function inferOperationalState(device) {
+    const explicit = normalizeOperationalStateValue(device?.operationalState);
+    if (explicit) return explicit;
+    if (Boolean(device?.running)) return "session";
+    if (Boolean(device?.isUpdating)) return "maintenance";
+    return "available";
+}
+
+function inferSessionMode(device) {
+    if (inferOperationalState(device) !== "session") return null;
+    const explicit = normalizeSessionModeValue(device?.sessionMode);
+    if (explicit) return explicit;
+    if (Boolean(device?.esPromoTD)) return "promo";
+    if (Number(device?.limit) > 0) return "limited";
+    return "free";
+}
+
+function enforceOperationalState(device) {
+    if (!device) return device;
+    const state = inferOperationalState(device);
+    device.operationalState = state;
+    device.stateRevision = Math.max(0, Number(device.stateRevision) || 0);
+    device.stateEventId = device.stateEventId || `legacy-state-${device.id}-${state}-${Number(device.start || device.updateStart || 0)}`;
+    if (state === "session") {
+        device.running = true;
+        device.isUpdating = false;
+        device.updateMode = null;
+        device.updateStart = null;
+        device.updateLimitMins = 0;
+        device.maintenanceId = null;
+        const mode = inferSessionMode(device) || "free";
+        device.sessionMode = mode;
+        device.sessionId = device.sessionId || `legacy-${device.id}-${Number(device.start) || Date.now()}`;
+        device.esPromoTD = mode === "promo";
+        if (mode !== "limited") device.limit = null;
+    } else if (state === "maintenance") {
+        device.running = false;
+        device.isUpdating = true;
+        device.start = null;
+        device.limit = null;
+        device.esPromoTD = false;
+        device.sessionMode = null;
+        device.sessionId = null;
+        device.maintenanceId = device.maintenanceId || `legacy-maintenance-${device.id}-${Number(device.updateStart) || 0}`;
+    } else {
+        device.running = false;
+        device.isUpdating = false;
+        device.start = null;
+        device.limit = null;
+        device.esPromoTD = false;
+        device.sessionMode = null;
+        device.sessionId = null;
+        device.updateMode = null;
+        device.updateStart = null;
+        device.updateLimitMins = 0;
+        device.maintenanceId = null;
+    }
+    return device;
+}
+
+function getOperationalState(device) { return inferOperationalState(device); }
+function getSessionMode(device) { return inferSessionMode(device); }
 function normalizeDB(data) {
     const base = data && typeof data === "object" ? data : {};
     const normalized = { ...base };
@@ -73,8 +147,18 @@ function normalizeDB(data) {
         forcedOff: false,
         forcedOffAt: null,
         toleranceFreeMs: 0,
+        sessionId: null,
+        sessionMode: null,
+        operationalState: null,
+        stateRevision: 0,
+        stateEventId: null,
+        statePrevEventId: null,
+        stateChangedAt: null,
+        stateChangedBy: null,
+        stateReason: null,
+        maintenanceId: null,
         ...dev
-    }));
+    })).map(enforceOperationalState);
 
     return normalized;
 }
@@ -170,7 +254,7 @@ function toast(title, message = "", type = "success") {
     if (!container) return;
     const el = document.createElement("div");
     el.className = `toast ${type}`;
-    el.innerHTML = `<strong>${escapeHTML(title)}</strong>${message ? `<span>${escapeHTML(message)}</span>` : ""}`;
+    el.innerHTML = `<div></div><div><strong>${escapeHTML(title)}</strong>${message ? `<span>${escapeHTML(message)}</span>` : ""}</div>`;
     container.appendChild(el);
     requestAnimationFrame(() => el.classList.add("show"));
     setTimeout(() => {
@@ -196,6 +280,7 @@ function initFirebase() {
 
             if (data) {
                 db = normalizeDB(data);
+                lastRemoteDevices = cloneClean(db.devices || []);
                 lastCloudSyncAt = Date.now();
 
                 // Copia del navegador solo para recuperación manual.
@@ -223,7 +308,74 @@ function initFirebase() {
     }
 }
 
-async function saveDB(reason = "update") {
+async function readRemoteDevices() {
+    if (!database) return [];
+    const snap = await database.ref(`${DB_PATH}/devices`).once("value");
+    const raw = snap.val();
+    return Array.isArray(raw)
+        ? raw.filter(Boolean)
+        : (raw && typeof raw === "object" ? Object.values(raw).filter(Boolean) : []);
+}
+
+function mergeDeviceConfigurationWithoutTouchingSessions(localDevices, remoteDevices) {
+    const localById = new Map((localDevices || []).map(d => [String(d.id), d]));
+    const remoteById = new Map((remoteDevices || []).map(d => [String(d.id), d]));
+    const merged = [];
+
+    // Conserva toda la sesión/runtime de Firebase. Desde GitHub solo se cambian
+    // los campos de configuración de terminal.
+    for (const remoteDev of remoteDevices || []) {
+        const localDev = localById.get(String(remoteDev.id));
+
+        if (!localDev) {
+            // Una eliminación remota solo se permite si no está ocupada.
+            if (getOperationalState(remoteDev) !== "available") {
+                merged.push(remoteDev);
+            }
+            continue;
+        }
+
+        merged.push({
+            ...remoteDev,
+            name: localDev.name,
+            ip: localDev.ip,
+            monitorIp: localDev.monitorIp ?? remoteDev.monitorIp ?? "",
+            type: localDev.type
+        });
+    }
+
+    // Terminales nuevas.
+    for (const localDev of localDevices || []) {
+        if (!remoteById.has(String(localDev.id))) {
+            merged.push({
+                ...localDev,
+                running: false,
+                start: null,
+                limit: null,
+                esPromoTD: false,
+                sessionMode: null,
+                sessionId: null,
+                operationalState: "available",
+                stateRevision: 1,
+                stateEventId: `state-web-new-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                statePrevEventId: null,
+                stateChangedAt: Date.now(),
+                stateChangedBy: "Administrador",
+                stateReason: "device-created-web",
+                maintenanceId: null,
+                forcedOff: false,
+                forcedOffAt: null,
+                pausedTime: 0,
+                offlineSince: null,
+                toleranceFreeMs: 0
+            });
+        }
+    }
+
+    return merged.map(enforceOperationalState);
+}
+
+async function saveDB(reason = "update", options = {}) {
     if (!database || !cloudReady) {
         toast("Firebase todavía está cargando", "Espera unos segundos antes de guardar cambios.", "warning");
         renderSystemHealth();
@@ -236,14 +388,118 @@ async function saveDB(reason = "update") {
     try {
         const clean = cloneClean(db);
 
-        // Sin nodos de seguridad adicionales ni reemplazo total de xbox_rev_db.
-        await database.ref(DB_PATH).update({
-            devices: clean.devices || [],
-            employees: clean.employees || [],
-            history: clean.history || [],
-            currentShift: clean.currentShift || {},
-            settings: clean.settings || {}
-        });
+        switch (reason) {
+            case "prices":
+                await database.ref(`${DB_PATH}/settings`).set(clean.settings || {});
+                break;
+
+            case "cash-adjustment": {
+                const user = options.user || currentRole || "Administrador";
+                const amount = Number(options.amount) || 0;
+                const historyRecord = options.historyRecord || null;
+                if (amount > 0) {
+                    await database.ref(`${DB_PATH}/currentShift/${user}/sobrantes`).transaction(current => (Number(current) || 0) + amount);
+                }
+                if (historyRecord) {
+                    await database.ref(`${DB_PATH}/history`).transaction(current => {
+                        const list = Array.isArray(current) ? current.filter(Boolean) : (current && typeof current === "object" ? Object.values(current).filter(Boolean) : []);
+                        const key = [historyRecord.timestamp, historyRecord.device, historyRecord.cajero, historyRecord.type, historyRecord.monto].join("|");
+                        const exists = list.some(item => [item?.timestamp, item?.device, item?.cajero, item?.type, item?.monto].join("|") === key);
+                        if (!exists) list.push(historyRecord);
+                        return list;
+                    }, undefined, false);
+                }
+                break;
+            }
+
+            case "shift-close": {
+                // Reinicia a cero todos los cajeros que existan en Firebase en este momento.
+                await database.ref(`${DB_PATH}/currentShift`).transaction(current => {
+                    const out = {};
+                    Object.keys(current || {}).forEach(name => { out[name] = { efectivoEsperado: 0, sobrantes: 0, sesiones: 0 }; });
+                    return out;
+                }, undefined, false);
+                break;
+            }
+
+            case "employee-save":
+            case "employee-delete": {
+                await database.ref(`${DB_PATH}/employees`).set(clean.employees || []);
+                if (reason === "employee-save" && options.newName) {
+                    // Solo se toca la caja de ese empleado; la del resto no se reemplaza.
+                    await database.ref(`${DB_PATH}/currentShift`).transaction(current => {
+                        const out = current && typeof current === "object" ? { ...current } : {};
+                        if (options.oldName && options.oldName !== options.newName && out[options.oldName]) {
+                            out[options.newName] = out[options.oldName];
+                            delete out[options.oldName];
+                        } else if (!out[options.newName]) {
+                            out[options.newName] = { efectivoEsperado: 0, sobrantes: 0, sesiones: 0 };
+                        }
+                        return out;
+                    }, undefined, false);
+                }
+                break;
+            }
+
+            case "device-save": {
+                const targetId = String(options.deviceId || "");
+                const localDev = (clean.devices || []).find(d => String(d.id) === targetId);
+                if (!localDev) throw new Error("No se encontró la terminal a guardar.");
+
+                const tx = await database.ref(`${DB_PATH}/devices`).transaction(current => {
+                    const list = Array.isArray(current) ? current.filter(Boolean) : (current && typeof current === "object" ? Object.values(current).filter(Boolean) : []);
+                    const index = list.findIndex(d => String(d?.id) === targetId);
+                    if (index >= 0) {
+                        const remoteDev = enforceOperationalState({ ...list[index] });
+                        list[index] = enforceOperationalState({
+                            ...remoteDev,
+                            name: localDev.name,
+                            ip: localDev.ip,
+                            monitorIp: localDev.monitorIp ?? remoteDev.monitorIp ?? "",
+                            type: localDev.type
+                        });
+                    } else {
+                        list.push(enforceOperationalState({
+                            ...localDev,
+                            running: false,
+                            isUpdating: false,
+                            operationalState: "available"
+                        }));
+                    }
+                    return list;
+                }, undefined, false);
+                if (!tx.committed) throw new Error("No se pudo guardar la terminal.");
+                break;
+            }
+
+            case "device-delete": {
+                const targetId = String(options.deviceId || "");
+                let blocked = false;
+                const tx = await database.ref(`${DB_PATH}/devices`).transaction(current => {
+                    const list = Array.isArray(current) ? current.filter(Boolean) : (current && typeof current === "object" ? Object.values(current).filter(Boolean) : []);
+                    const remoteDev = list.find(d => String(d?.id) === targetId);
+                    if (!remoteDev) return list;
+                    if (getOperationalState(enforceOperationalState({ ...remoteDev })) !== "available") {
+                        blocked = true;
+                        return; // aborta la transacción
+                    }
+                    return list.filter(d => String(d?.id) !== targetId);
+                }, undefined, false);
+                if (blocked || !tx.committed) throw new Error("La terminal cambió de estado y no se eliminó.");
+                break;
+            }
+
+            default:
+                // El panel GitHub es supervisor: nunca publica el array devices por
+                // una operación genérica. Esto evita cambiar sesiones activas.
+                await database.ref(DB_PATH).update({
+                    employees: clean.employees || [],
+                    history: clean.history || [],
+                    currentShift: clean.currentShift || {},
+                    settings: clean.settings || {}
+                });
+                break;
+        }
 
         saveLocalBackup();
         if (cloudConnected) lastCloudSyncAt = Date.now();
@@ -257,6 +513,7 @@ async function saveDB(reason = "update") {
         renderSystemHealth();
     }
 }
+
 
 function initShifts() {
     if (!db.currentShift || typeof db.currentShift !== "object") db.currentShift = {};
@@ -387,7 +644,7 @@ function realizarLogin() {
 
 function cerrarSesion() {
     if (!confirm(
-        "¿Cerrar el acceso recordado en este dispositivo?\\n\\n" +
+        "¿Cerrar el acceso recordado en este dispositivo?\n\n" +
         "La próxima vez se volverá a solicitar el PIN del propietario."
     )) return;
 
@@ -445,7 +702,7 @@ function getElapsedMs(dev) {
 function getBillableMs(dev) {
     const elapsed = getElapsedMs(dev);
 
-    if (dev.esPromoTD) return elapsed;
+    if (getSessionMode(dev) === "promo") return elapsed;
 
     if (dev.limit) {
         return Math.min(elapsed, Number(dev.limit) * 60000);
@@ -455,11 +712,10 @@ function getBillableMs(dev) {
     return Math.max(0, elapsed - freeToleranceMs);
 }
 
-function calcularCobroEfectivo(tipo, controles, msTranscurridos, esPromoTD, limit = null) {
-    if (esPromoTD && tipo === "Xbox") return 120.00;
-    let mins = Number(msTranscurridos) / 60000;
+function calcularCobroEfectivo(tipo, controles, msTranscurridos, esPromoTD, limit = null, controlLog = null) {
+    if (esPromoTD && tipo === "Xbox") return PROMO_TD_PRICE;
+    const mins = Number(msTranscurridos) / 60000;
     if (mins < 1) return 0.00;
-    if (limit && mins > Number(limit)) mins = Number(limit);
 
     const s = { ...DEFAULT_SETTINGS, ...(db.settings || {}) };
     let total = 0;
@@ -478,14 +734,17 @@ function calcularCobroEfectivo(tipo, controles, msTranscurridos, esPromoTD, limi
             else cobroBase += Number(s.p45) + (((Number(s.p60) - Number(s.p45)) / 15) * (minsRestantes - 45));
         }
 
-        let costoExtraHora = 0;
-        if (Number(controles) === 2) costoExtraHora = Number(s.ext1);
-        else if (Number(controles) === 3) costoExtraHora = Number(s.ext2);
-        else if (Number(controles) === 4) costoExtraHora = Number(s.ext3);
-
-        const cobroControlesExtra = Number(controles) > 1 && mins >= 10
-            ? costoExtraHora * Math.ceil(mins / 60)
-            : 0;
+        // Cada control extra se cobra por hora completada desde que se agregó
+        // (mínimo 1 si lleva 10+ min). Misma regla que el sistema local.
+        const tarifas = [Number(s.ext1) || 0, Number(s.ext2) || 0, Number(s.ext3) || 0];
+        const nExtras = Math.min(3, Math.max(0, Number(controles) - 1));
+        const log = Array.isArray(controlLog) ? controlLog : (controlLog && typeof controlLog === "object" ? Object.values(controlLog) : []);
+        let cobroControlesExtra = 0;
+        for (let i = 0; i < nExtras; i++) {
+            const tarifaHora = Math.max(0, tarifas[i] - (i > 0 ? tarifas[i - 1] : 0));
+            const minsConControl = Math.max(0, mins - ((Number(log[i]) || 0) / 60000));
+            if (minsConControl >= 10) cobroControlesExtra += tarifaHora * Math.max(1, Math.floor(minsConControl / 60));
+        }
 
         total = cobroBase + cobroControlesExtra;
     }
@@ -493,10 +752,35 @@ function calcularCobroEfectivo(tipo, controles, msTranscurridos, esPromoTD, limi
     return Math.max(5.00, Number(total) || 0);
 }
 
+function getSessionEstimate(dev) {
+    return calcularCobroEfectivo(dev.type, dev.controls, getBillableMs(dev), getSessionMode(dev) === "promo", null, dev.extraControlLog);
+}
+
+// Total cobrado hoy (historial de hoy) + $120 de cualquier Promo Todo el Día en curso.
+let dayTotalsCache = { key: "", total: 0 };
+function getDayRevenue() {
+    const today = new Date().toDateString();
+    const history = Array.isArray(db.history) ? db.history : [];
+    const last = history[history.length - 1];
+    const key = `${today}|${history.length}|${last?.timestamp || ""}|${last?.monto ?? ""}`;
+    if (dayTotalsCache.key !== key) {
+        let total = 0;
+        history.forEach(h => {
+            if (!h || h.device === "Caja" || String(h.type || "").includes("Sobrante")) return;
+            const fecha = new Date(h.timestamp);
+            if (Number.isNaN(fecha.getTime()) || fecha.toDateString() !== today) return;
+            total += Number.parseFloat(h.monto) || 0;
+        });
+        dayTotalsCache = { key, total };
+    }
+    const promos = db.devices.filter(d => getOperationalState(d) === "session" && getSessionMode(d) === "promo" && d.type === "Xbox").length;
+    return dayTotalsCache.total + promos * PROMO_TD_PRICE;
+}
+
 function getRequestedTimeLabel(dev) {
-    if (dev.isUpdating) return "Mantenimiento";
+    if (getOperationalState(dev) === "maintenance") return "Mantenimiento";
     if (!dev.running) return "Disponible";
-    if (dev.esPromoTD) return "Promo Todo el Día";
+    if (getSessionMode(dev) === "promo") return "Promo Todo el Día";
     if (!dev.limit) return "Tiempo libre";
     const limit = Number(dev.limit);
     return limit >= 60 ? `${(limit / 60).toFixed(1).replace(".0", "")} h solicitada${limit > 60 ? "s" : ""}` : `${limit} min solicitados`;
@@ -504,9 +788,9 @@ function getRequestedTimeLabel(dev) {
 
 function getDeviceStatus(dev) {
     if (dev.isOffline) return { text: "Sin conexión", cls: "offline" };
-    if (dev.running && dev.limit && (getElapsedMs(dev) / 60000) >= Number(dev.limit)) return { text: "Tiempo cumplido", cls: "time-up" };
-    if (dev.running) return { text: "En uso", cls: "active" };
-    if (dev.isUpdating) return { text: "Mantenimiento", cls: "updating" };
+    if (getOperationalState(dev) === "session" && dev.limit && (getElapsedMs(dev) / 60000) >= Number(dev.limit)) return { text: "Tiempo cumplido", cls: "time-up" };
+    if (getOperationalState(dev) === "session") return { text: "En uso", cls: "active" };
+    if (getOperationalState(dev) === "maintenance") return { text: "Mantenimiento", cls: "updating" };
     return { text: "Disponible", cls: "" };
 }
 
@@ -514,11 +798,11 @@ function getDeviceTimerState(dev) {
     let tStr = "00:00:00";
     let cStr = "$0.00";
 
-    if (dev.running) {
+    if (getOperationalState(dev) === "session") {
         const diff = getElapsedMs(dev);
         const mins = diff / 60000;
         tStr = `${Math.floor(mins / 60).toString().padStart(2, "0")}:${Math.floor(mins % 60).toString().padStart(2, "0")}:${Math.floor((diff / 1000) % 60).toString().padStart(2, "0")}`;
-        cStr = formatMoney(calcularCobroEfectivo(dev.type, dev.controls, getBillableMs(dev), dev.esPromoTD, null));
+        cStr = formatMoney(getSessionEstimate(dev));
 
         if (dev.isOffline) tStr = `PAUSADO · ${tStr}`;
 
@@ -529,7 +813,7 @@ function getDeviceTimerState(dev) {
             if (remaining <= 0 || dev.forcedOff) tStr = "TIEMPO AGOTADO";
             else if (!dev.isOffline) tStr = `TOLERANCIA · ${Math.floor(remaining)}m ${Math.floor((remaining * 60) % 60).toString().padStart(2, "0")}s`;
         }
-    } else if (dev.isUpdating) {
+    } else if (getOperationalState(dev) === "maintenance") {
         const remaining = Number(dev.updateLimitMins || 0) - ((Date.now() - Number(dev.updateStart || Date.now())) / 60000);
         if (remaining <= 0) {
             tStr = "LISTO PARA REVISAR";
@@ -548,10 +832,7 @@ function renderDashboardSummary() {
     const offline = db.devices.filter(d => d.isOffline).length;
     const updating = db.devices.filter(d => d.isUpdating).length;
     const available = db.devices.filter(d => !d.running && !d.isUpdating && !d.isOffline).length;
-    const liveRevenue = db.devices.reduce((sum, dev) => {
-        if (!dev.running) return sum;
-        return sum + calcularCobroEfectivo(dev.type, dev.controls, getBillableMs(dev), dev.esPromoTD, null);
-    }, 0);
+    const dayRevenue = getDayRevenue();
 
     const map = {
         summaryActive: active,
@@ -564,7 +845,7 @@ function renderDashboardSummary() {
         if (el) el.textContent = String(value);
     });
     const revenue = document.getElementById("dashboardLiveRevenue");
-    if (revenue) revenue.textContent = formatMoney(liveRevenue);
+    if (revenue) revenue.textContent = formatMoney(dayRevenue);
 }
 
 function render() {
@@ -584,19 +865,19 @@ function render() {
         const status = getDeviceStatus(dev);
         let cardClass = `card ${dev.type === "PC" ? "pc" : ""}`;
         if (dev.isOffline) cardClass += " offline";
-        if (dev.running) cardClass += " active";
-        if (dev.isUpdating) cardClass += " updating";
+        if (getOperationalState(dev) === "session") cardClass += " active";
+        if (getOperationalState(dev) === "maintenance") cardClass += " updating";
         if (status.cls === "time-up") cardClass += " time-up";
 
         const controlsInfo = dev.type === "Xbox" && dev.running
             ? `<span class="detail-chip">${Number(dev.controls) || 1} control${Number(dev.controls) === 1 ? "" : "es"}</span>`
             : "";
-        const promoInfo = dev.esPromoTD && dev.running ? `<span class="detail-chip">Promo TD</span>` : "";
+        const promoInfo = getSessionMode(dev) === "promo" && dev.running ? `<span class="detail-chip">Promo TD · sesión protegida</span>` : "";
 
         let observerText = "Esperando actividad del sistema local";
         let observerClass = "";
-        if (dev.running) observerText = "Sesión activa en el local";
-        if (dev.isUpdating) { observerText = "Equipo en mantenimiento"; observerClass = "updating"; }
+        if (getOperationalState(dev) === "session") observerText = "Sesión activa en el local";
+        if (getOperationalState(dev) === "maintenance") { observerText = "Equipo en mantenimiento"; observerClass = "updating"; }
         if (dev.isOffline) { observerText = "Terminal reportada sin conexión"; observerClass = "offline"; }
 
         return `
@@ -641,12 +922,17 @@ function render() {
 function updateCajaUI() {
     if (!currentRole) return;
     initShifts();
-    const shift = db.currentShift[currentRole] || { efectivoEsperado: 0, sobrantes: 0, sesiones: 0 };
+    let efectivo = 0, sobrantes = 0, sesiones = 0;
+    Object.values(db.currentShift || {}).forEach(shift => {
+        efectivo += Number(shift?.efectivoEsperado) || 0;
+        sobrantes += Number(shift?.sobrantes) || 0;
+        sesiones += Number(shift?.sesiones) || 0;
+    });
     const title = document.getElementById("cajaTitle");
-    if (title) title.textContent = `Corte de caja · ${currentRole}`;
-    document.getElementById("cajaEfectivoEsperado").textContent = formatMoney(shift.efectivoEsperado);
-    document.getElementById("cajaSobrantes").textContent = formatMoney(shift.sobrantes);
-    document.getElementById("cajaSesionesTurno").textContent = String(Number(shift.sesiones) || 0);
+    if (title) title.textContent = "Corte de caja · Turno global";
+    document.getElementById("cajaEfectivoEsperado").textContent = formatMoney(efectivo);
+    document.getElementById("cajaSobrantes").textContent = formatMoney(sobrantes);
+    document.getElementById("cajaSesionesTurno").textContent = String(sesiones);
 }
 
 async function registrarSobrante() {
@@ -663,18 +949,19 @@ async function registrarSobrante() {
     const shift = db.currentShift[currentRole] || (db.currentShift[currentRole] = { efectivoEsperado: 0, sobrantes: 0, sesiones: 0 });
     shift.sobrantes = (Number(shift.sobrantes) || 0) + monto;
     const nota = (notaEl?.value || "N/A").trim() || "N/A";
-    db.history.push({
+    const historyRecord = {
         timestamp: new Date().toISOString(),
         device: "Caja",
         cajero: currentRole,
         durationMins: 0,
         type: `Sobrante (${nota})`,
         monto
-    });
+    };
+    db.history.push(historyRecord);
 
     if (montoEl) montoEl.value = "";
     if (notaEl) notaEl.value = "";
-    await saveDB("cash-adjustment");
+    await saveDB("cash-adjustment", { user: currentRole, amount: monto, historyRecord });
     updateCajaUI();
     if (isAdminAuthenticated) renderHistoryTable();
     toast("Ajuste registrado", formatMoney(monto));
@@ -683,11 +970,13 @@ async function registrarSobrante() {
 async function terminarTurno() {
     if (!currentRole) return;
     initShifts();
-    if (!confirm(`¿Terminar el turno de ${currentRole}?\nEl conteo de caja de este usuario se reiniciará a $0.00.`)) return;
-    db.currentShift[currentRole] = { efectivoEsperado: 0, sobrantes: 0, sesiones: 0 };
+    if (!confirm("¿Terminar el turno global?\nEl conteo de TODOS los cajeros se reiniciará a $0.00.")) return;
+    Object.keys(db.currentShift).forEach(key => {
+        db.currentShift[key] = { efectivoEsperado: 0, sobrantes: 0, sesiones: 0 };
+    });
     await saveDB("shift-close");
     updateCajaUI();
-    toast("Turno reiniciado", currentRole);
+    toast("Turno reiniciado", "Caja global en $0.00");
 }
 
 function guardarPrecios() {
@@ -731,6 +1020,7 @@ function guardarDispositivo() {
     if (!isValidHost(ip)) return toast("IP inválida", "Revisa la dirección de la terminal.", "warning");
     if (db.devices.some(d => d.ip === ip && String(d.id) !== String(id))) return toast("IP duplicada", "Esa IP ya está asignada.", "warning");
 
+    let savedId = id;
     if (id) {
         const dev = db.devices.find(d => String(d.id) === String(id));
         if (!dev) return;
@@ -738,8 +1028,9 @@ function guardarDispositivo() {
         dev.ip = ip;
         dev.type = type;
     } else {
+        savedId = `dev-${Date.now()}`;
         db.devices.push({
-            id: `dev-${Date.now()}`,
+            id: savedId,
             name,
             ip,
             type,
@@ -747,6 +1038,16 @@ function guardarDispositivo() {
             start: null,
             limit: null,
             esPromoTD: false,
+            sessionMode: null,
+            sessionId: null,
+            operationalState: "available",
+            stateRevision: 1,
+            stateEventId: `state-web-new-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            statePrevEventId: null,
+            stateChangedAt: Date.now(),
+            stateChangedBy: "Administrador",
+            stateReason: "device-created-web",
+            maintenanceId: null,
             controls: 1,
             isUpdating: false,
             updateLimitMins: 0,
@@ -757,7 +1058,7 @@ function guardarDispositivo() {
     }
 
     cancelarEdicionDev();
-    saveDB("device-save").then(() => {
+    saveDB("device-save", { deviceId: savedId }).then(() => {
         renderAdminTables();
         render();
         toast("Terminal guardada", name);
@@ -790,10 +1091,10 @@ function eliminarDispositivo(id) {
     if (!isAdminAuthenticated) return;
     const dev = db.devices.find(d => String(d.id) === String(id));
     if (!dev) return;
-    if (dev.running || dev.isUpdating) return toast("Terminal ocupada", "No se puede eliminar mientras está activa o en mantenimiento.", "warning");
+    if (getOperationalState(dev) !== "available") return toast("Terminal ocupada", "No se puede eliminar mientras está activa o en mantenimiento.", "warning");
     if (!confirm(`¿Eliminar permanentemente ${dev.name}?`)) return;
     db.devices = db.devices.filter(d => String(d.id) !== String(id));
-    saveDB("device-delete").then(() => {
+    saveDB("device-delete", { deviceId: id }).then(() => {
         renderAdminTables();
         render();
         toast("Terminal eliminada", dev.name, "warning");
@@ -809,10 +1110,12 @@ function guardarEmpleado() {
     if (!/^\d{3,12}$/.test(pin)) return toast("PIN inválido", "Usa entre 3 y 12 dígitos.", "warning");
     if (db.employees.some(e => String(e.name).toLowerCase() === name.toLowerCase() && String(e.id) !== String(id))) return toast("Empleado duplicado", "Ese nombre ya existe.", "warning");
 
+    let oldNameForSave = null;
     if (id) {
         const emp = db.employees.find(e => String(e.id) === String(id));
         if (!emp) return;
         const oldName = emp.name;
+        oldNameForSave = oldName;
         emp.name = name;
         emp.pin = pin;
         if (oldName !== name) {
@@ -825,7 +1128,7 @@ function guardarEmpleado() {
     }
 
     cancelarEdicionEmp();
-    saveDB("employee-save").then(() => {
+    saveDB("employee-save", { newName: name, oldName: oldNameForSave }).then(() => {
         renderAdminTables();
         poblarFiltroCajerosAdmin();
         toast("Empleado guardado", name);
@@ -857,7 +1160,6 @@ function eliminarEmpleado(id) {
     if (!emp) return;
     if (!confirm(`¿Dar de baja a ${emp.name}?`)) return;
     db.employees = db.employees.filter(e => String(e.id) !== String(id));
-    delete db.currentShift[emp.name];
     saveDB("employee-delete").then(() => {
         renderAdminTables();
         poblarFiltroCajerosAdmin();
@@ -912,7 +1214,15 @@ function renderHistoryTable() {
     const ahora = new Date();
 
     if (range === "day") filtrados = filtrados.filter(h => new Date(h.timestamp).toDateString() === ahora.toDateString());
-    else if (range === "week") filtrados = filtrados.filter(h => new Date(h.timestamp) >= new Date(ahora.getTime() - 7 * 24 * 60 * 60 * 1000));
+    else if (range === "week") {
+        // Semana natural: lunes 00:00 a domingo 23:59:59.
+        const inicioSemana = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate() - ((ahora.getDay() + 6) % 7));
+        const finSemana = new Date(inicioSemana.getFullYear(), inicioSemana.getMonth(), inicioSemana.getDate() + 7);
+        filtrados = filtrados.filter(h => {
+            const fecha = new Date(h.timestamp);
+            return fecha >= inicioSemana && fecha < finSemana;
+        });
+    }
     else if (range === "month") filtrados = filtrados.filter(h => {
         const d = new Date(h.timestamp);
         return d.getMonth() === ahora.getMonth() && d.getFullYear() === ahora.getFullYear();
