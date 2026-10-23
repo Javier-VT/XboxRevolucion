@@ -21,6 +21,7 @@ const LOCAL_BACKUP_KEY = "xbox_rev_cloud_snapshot_v3";
 const OWNER_TRUST_KEY = "xbox_rev_owner_trusted_v1";
 const DEFAULT_SETTINGS = Object.freeze({ p15: 8, p30: 15, p45: 20, p60: 25, ext1: 5, ext2: 10, ext3: 15 });
 const PROMO_TD_PRICE = 120;
+const LIMIT_TOLERANCE_MINUTES = 5;   // tolerancia tras el límite (el local cobra y libera solo al terminar)
 
 let database = null;
 let currentRole = null;
@@ -689,7 +690,8 @@ function poblarFiltroCajerosAdmin() {
     if ([...userFilter.options].some(o => o.value === currentSelected)) userFilter.value = currentSelected;
 }
 
-function getElapsedMs(dev) {
+// Tiempo real transcurrido (sin tope), para tolerancia y estado "tiempo cumplido".
+function getRawElapsedMs(dev) {
     if (!dev.running || !dev.start) return 0;
 
     let currentEnd = Date.now();
@@ -697,6 +699,13 @@ function getElapsedMs(dev) {
     else if (dev.isOffline && dev.offlineSince) currentEnd = Number(dev.offlineSince);
 
     return Math.max(0, currentEnd - Number(dev.start) - (Number(dev.pausedTime) || 0));
+}
+
+// Tiempo mostrado y cobrado: con límite, el contador se detiene en el tiempo solicitado.
+function getElapsedMs(dev) {
+    const raw = getRawElapsedMs(dev);
+    if (dev.limit && getSessionMode(dev) === "limited") return Math.min(raw, Number(dev.limit) * 60000);
+    return raw;
 }
 
 function getBillableMs(dev) {
@@ -788,7 +797,7 @@ function getRequestedTimeLabel(dev) {
 
 function getDeviceStatus(dev) {
     if (dev.isOffline) return { text: "Sin conexión", cls: "offline" };
-    if (getOperationalState(dev) === "session" && dev.limit && (getElapsedMs(dev) / 60000) >= Number(dev.limit)) return { text: "Tiempo cumplido", cls: "time-up" };
+    if (getOperationalState(dev) === "session" && dev.limit && (getRawElapsedMs(dev) / 60000) >= Number(dev.limit)) return { text: "Tiempo cumplido", cls: "time-up" };
     if (getOperationalState(dev) === "session") return { text: "En uso", cls: "active" };
     if (getOperationalState(dev) === "maintenance") return { text: "Mantenimiento", cls: "updating" };
     return { text: "Disponible", cls: "" };
@@ -806,10 +815,9 @@ function getDeviceTimerState(dev) {
 
         if (dev.isOffline) tStr = `PAUSADO · ${tStr}`;
 
-        if (dev.limit && mins >= Number(dev.limit)) {
+        if (dev.limit && getSessionMode(dev) === "limited" && mins >= Number(dev.limit)) {
             const limit = Number(dev.limit);
-            const tolerance = limit <= 30 ? 5 : limit <= 60 ? 8 : limit <= 90 ? 10 : 15;
-            const remaining = Math.max(0, (limit + tolerance) - mins);
+            const remaining = Math.max(0, (limit + LIMIT_TOLERANCE_MINUTES) - (getRawElapsedMs(dev) / 60000));
             if (remaining <= 0 || dev.forcedOff) tStr = "TIEMPO AGOTADO";
             else if (!dev.isOffline) tStr = `TOLERANCIA · ${Math.floor(remaining)}m ${Math.floor((remaining * 60) % 60).toString().padStart(2, "0")}s`;
         }
